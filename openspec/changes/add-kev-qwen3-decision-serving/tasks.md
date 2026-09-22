@@ -16,9 +16,9 @@
 
 ## 3. 先验证引擎扩展路径
 
-- [ ] 3.1 在上游 vLLM 注册专用 Qwen3 pooling 模型，保持 causal attention，不构建或调用生成输出路径。
+- [x] 3.1 在上游 vLLM 注册专用 Qwen3 pooling 模型，保持 causal attention，不构建或调用生成输出路径。
 - [ ] 3.2 用最小 dummy 模型验证 plugin pooling、extra_kwargs 跨进程传递、每题不同 K 的输出和请求 ID 对应关系。
-- [ ] 3.3 覆盖启动 profiling/dummy warm-up 的有效 metadata 路径，证明正常数据校验与 profiling 不冲突。
+- [x] 3.3 覆盖启动 profiling/dummy warm-up 的有效 metadata 路径，证明正常数据校验与 profiling 不冲突。
 - [ ] 3.4 验证 Ascend pooling 路径可执行；若需要后端补丁，记录最小复现、修改范围和为何不能仅在上游模型/Pooler 解决。
 
 ## 4. 输入编排和 pointer 计算
@@ -32,18 +32,18 @@
 
 ## 5. SystemOne API 和生命周期
 
-- [ ] 5.1 新增三类型请求校验和 /v1/systemone 路由，仅在专用模型实例启用；覆盖未知字段/模型、生成参数与非有限数值。
+- [x] 5.1 新增三类型请求校验和 /v1/systemone 路由，仅在专用模型实例启用；覆盖未知字段/模型、生成参数与非有限数值。
 - [x] 5.2 实现 token 化后的全请求限额校验，覆盖最后一题超限时整个请求不提交、禁止静默截断。
 - [x] 5.3 实现原始概率上的 choice/noul/score 和 confidence 后处理、稳定并列规则与两位小数展示；与固定 KEV 后处理 golden 用例比较。
 - [x] 5.4 实现服务端父子请求 ID、有界队列、全局并发和单父 fan-out 上限，以及轮流提交父请求的调度。
 - [x] 5.5 实现乱序结果聚合和全成功响应，覆盖不同父请求使用相同 question ID 的情况。
 - [x] 5.6 实现包含排队的 deadline、客户端断连、单分支失败、engine abort 和资源释放，覆盖 429/500/503/504 错误及恢复后可继续服务。
-- [ ] 5.7 实现规范 model ID、模型元数据、逻辑 usage 和端到端 latency；单独测试序列化 token 计数与两位小数求和偏差。
-- [ ] 5.8 验证 KEV 实例拒绝聊天/生成请求，原有非 KEV 实例的路由与行为不受影响。
+- [x] 5.7 实现规范 model ID、模型元数据、逻辑 usage 和端到端 latency；单独测试序列化 token 计数与两位小数求和偏差。
+- [x] 5.8 验证 KEV 实例拒绝聊天/生成请求，原有非 KEV 实例的路由与行为不受影响。
 
 ## 6. 运行配置和可观测性
 
-- [ ] 6.1 实现首版配置校验：TP=1、显式 dtype、eager，拒绝 APC/chunked prefill/图执行/量化/动态 LoRA；检查非分块 token 预算。
+- [x] 6.1 实现首版配置校验：TP=1、显式 dtype、eager，拒绝 APC/chunked prefill/图执行/量化/动态 LoRA；检查非分块 token 预算。
 - [ ] 6.2 使就绪状态跟随制品验证、模型加载和有效决策 warm-up，覆盖 HTTP 已启动但模型不可执行的场景。
 - [ ] 6.3 增加逻辑/实际输入 tokens、成功问题数/请求数、排队/端到端时间、在途量、错误/超时/取消 metrics，验证取消工作不计为成功吞吐。
 - [ ] 6.4 输出实际环境和制品版本诊断，明确 9.0.1 组合的验证状态、精度及功能范围。
