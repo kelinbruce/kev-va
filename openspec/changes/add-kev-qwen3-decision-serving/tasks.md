@@ -2,7 +2,7 @@
 
 - [ ] 1.1 记录实际 910 型号、显存、驱动/固件、容器内 CANN/NNAL、torch/torch-npu、Triton Ascend、镜像 digest 和两个仓库 SHA，形成环境报告。
 - [ ] 1.2 在现有 0.26 + CANN 9.0.1 环境运行普通 Qwen3-4B 真实权重基线，保存命令、请求和输出；失败时记录环境阻塞，不自动更换版本。
-- [ ] 1.3 固定 KEV 代码 90990a5f、qwen3 权重 c4bfa11b 及完整 SHA，读取 head 元数据和基座 revision；输出来源缺口及全部文件校验清单。
+- [x] 1.3 固定 KEV 代码 90990a5f、qwen3 权重 c4bfa11b 及完整 SHA，读取 head 元数据和基座 revision；输出来源缺口及全部文件校验清单。
 - [ ] 1.4 冻结至少 200 个问题的一致性集（三类型各 >=30）和独立边界集，保存数据 SHA256、原始概率、logits、token IDs 与 readout 位置。
 - [ ] 1.5 记录匹配版本上游 vLLM 的实施 checkout 和当前 Ascend 交付 checkout，确认运行时实际 import 路径；给出双仓库 diff/patch 交付位置。
 
@@ -23,8 +23,8 @@
 
 ## 4. 输入编排和 pointer 计算
 
-- [ ] 4.1 复现固定 KEV renderer、option_text、特殊 token 转义，覆盖嵌套 JSON、中文、布尔/null 与伪造分隔符。
-- [ ] 4.2 构造每题独立的完整 token 序列和序列内索引，验证 position IDs、选项末尾位置、决策位置与参考完全一致。
+- [x] 4.1 复现固定 KEV renderer、option_text、特殊 token 转义，覆盖嵌套 JSON、中文、布尔/null 与伪造分隔符。
+- [x] 4.2 构造每题独立的完整 token 序列和序列内索引，验证 position IDs、选项末尾位置、决策位置与参考完全一致。
 - [ ] 4.3 实现按运行时 batch 偏移提取选项/决策表示，执行 FP32 pointer、温度校准与逐题 softmax，仅返回必要概率。
 - [ ] 4.4 用固定 FP32 hidden states 验证 head atol/rtol <=1e-5，覆盖 bias、非默认温度、K=1/2/8/255 和变长 batch。
 - [ ] 4.5 验证 batch 重排和多请求混排时的索引、结果映射及 padding，禁止按所有候选项做全局 softmax。

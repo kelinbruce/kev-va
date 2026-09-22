@@ -1,0 +1,59 @@
+{
+  "repository": "jaredpalmer/kev-4b",
+  "requested_revision": "qwen3",
+  "resolved_revision": "c4bfa11b0dc07691884f2d97f1c4c4c05c92e416",
+  "base_repository": "Qwen/Qwen3-4B-Base",
+  "base_revision": "906bfd4b4dc7f14ee4320094d8b41684abff8539",
+  "reference_repository": "jaredpalmer/kev",
+  "reference_revision": "90990a5fac2995b9faa3190f7d437e84f2067768",
+  "training_source_revision": "29d71c78368657b3a522729a01c748ea15272abc",
+  "source_gap": "The published checkpoint was trained from an ancestor of the fixed reference revision. All 20 source hashes recorded by provenance.json differ at reference revision 90990a5f; real-weight parity remains mandatory.",
+  "head": {
+    "hidden_size": 2560,
+    "head_dim": 256,
+    "dtype": "float32",
+    "parameters": {
+      "q.weight": [256, 2560],
+      "q.bias": [256],
+      "k.weight": [256, 2560],
+      "k.bias": [256]
+    },
+    "all_parameters_finite": true,
+    "temperature": 1.0,
+    "temperature_source": "head.pt omits temperature; kev/checkpoint.py defaults CheckpointMeta.temperature to 1.0"
+  },
+  "training": {
+    "lora_rank": 16,
+    "lora_alpha": 32,
+    "option_isolation": false,
+    "special_embeddings": false,
+    "backbone_training_dtype": "bf16",
+    "target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj"
+    ]
+  },
+  "files_sha256": {
+    ".gitattributes": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930",
+    "README.md": "707d29726fe2929723ccf9e4d5934d03adf3d4c98ae6f879ef533c8e6a05592e",
+    "adapter_config.json": "46d9f1113377e8d0032f0548ae03b270153b2b7ba6dd26b63b244d29487e00e6",
+    "adapter_model.safetensors": "3fa10d8646f567e884ea47841b2f3d5f2d135b81a4447a8ea79a6fc94e9c6ae1",
+    "added_tokens.json": "c0284b582e14987fbd3d5a2cb2bd139084371ed9acbae488829a1c900833c680",
+    "head.pt": "dad87f7e60c8b3f1eec8bee83858a5429c6ab06dc96385a935bc88e6b468a45d",
+    "merges.txt": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+    "provenance.json": "6eccec3315c2c1eaa6007366c0103dce0b0b2c71193eb85c906a7d9bafaf2e6d",
+    "result.json": "8ca170b76a50657365549683de8cfc66a5b976596e8696165b2ac45aa6070000",
+    "special_tokens_map.json": "6676f091c8bc4d1b50146427cfde92073402866b87b6e39223227931b70083e9",
+    "tokenizer.json": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+    "tokenizer_config.json": "67e5a0a11cd35f9c00ee52e0af4cdc0baa75fea0cb5fce7d1beb251b4621d15c",
+    "train.log": "5eb0820cda9fdc30654aebca6e39dec4cdf9544ffb2d5ffb241413baf58483d0",
+    "training_config.json": "b79f9744e4fcea7473b47f75aefcf9d239d95459e55fcace17d953ba77a42365",
+    "training_metrics.json": "a4f810daefcbea0c8c84d81ae1f7727a4ccf3e66de2fffffe4dd2ea15fcb5b5e",
+    "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+  }
+}
