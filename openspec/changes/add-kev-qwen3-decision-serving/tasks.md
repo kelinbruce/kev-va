@@ -2,50 +2,50 @@
 
 - [ ] 1.1 记录实际 910 型号、显存、驱动/固件、容器内 CANN/NNAL、torch/torch-npu、Triton Ascend、镜像 digest 和两个仓库 SHA，形成环境报告。
 - [ ] 1.2 在现有 0.26 + CANN 9.0.1 环境运行普通 Qwen3-4B 真实权重基线，保存命令、请求和输出；失败时记录环境阻塞，不自动更换版本。
-- [x] 1.3 固定 KEV 代码 90990a5f、qwen3 权重 c4bfa11b 及完整 SHA，读取 head 元数据和基座 revision；输出来源缺口及全部文件校验清单。
-- [x] 1.4 冻结至少 200 个问题的一致性集（三类型各 >=30）和独立边界集，保存数据 SHA256、原始概率、logits、token IDs 与 readout 位置。
-- [x] 1.5 记录匹配版本上游 vLLM 的实施 checkout 和当前 Ascend 交付 checkout，确认运行时实际 import 路径；给出双仓库 diff/patch 交付位置。
+- [ ] 1.3 固定 KEV 代码 90990a5f、qwen3 权重 c4bfa11b 及完整 SHA，读取 head 元数据和基座 revision；输出来源缺口及全部文件校验清单。
+- [ ] 1.4 冻结至少 200 个问题的一致性集（三类型各 >=30）和独立边界集，保存数据 SHA256、原始概率、logits、token IDs 与 readout 位置。
+- [ ] 1.5 记录匹配版本上游 vLLM 的实施 checkout 和当前 Ascend 交付 checkout，确认运行时实际 import 路径；给出双仓库 diff/patch 交付位置。
 
 ## 2. 导出和验证模型制品
 
-- [x] 2.1 在隔离环境实现 FP32 LoRA 合并，保留 head 的 FP32 weight/bias、维度和温度；不改 Ascend 运行容器依赖。
-- [x] 2.2 导出完整权重、配置、tokenizer 和 kev_manifest.json，记录全部不可变来源、dtype、合并方式、结构 token ID 与 SHA256。
-- [x] 2.3 实现架构、option-isolation、缺失参数、形状、校验值、token ID、有限参数及正温度的校验，并覆盖拒绝场景。
-- [x] 2.4 验证同环境 FP32 合并前后最大概率误差 <=1e-4；单独记录转换为运行 dtype 的误差。
-- [x] 2.5 验证完整制品可离线加载；产出导出命令、依赖版本和重复加载结果。
+- [ ] 2.1 在隔离环境实现 FP32 LoRA 合并，保留 head 的 FP32 weight/bias、维度和温度；不改 Ascend 运行容器依赖。
+- [ ] 2.2 导出完整权重、配置、tokenizer 和 kev_manifest.json，记录全部不可变来源、dtype、合并方式、结构 token ID 与 SHA256。
+- [ ] 2.3 实现架构、option-isolation、缺失参数、形状、校验值、token ID、有限参数及正温度的校验，并覆盖拒绝场景。
+- [ ] 2.4 验证同环境 FP32 合并前后最大概率误差 <=1e-4；单独记录转换为运行 dtype 的误差。
+- [ ] 2.5 验证完整制品可离线加载；产出导出命令、依赖版本和重复加载结果。
 
 ## 3. 先验证引擎扩展路径
 
-- [x] 3.1 在上游 vLLM 注册专用 Qwen3 pooling 模型，保持 causal attention，不构建或调用生成输出路径。
-- [x] 3.2 用最小 dummy 模型验证 plugin pooling、extra_kwargs 跨进程传递、每题不同 K 的输出和请求 ID 对应关系。
-- [x] 3.3 覆盖启动 profiling/dummy warm-up 的有效 metadata 路径，证明正常数据校验与 profiling 不冲突。
+- [ ] 3.1 在上游 vLLM 注册专用 Qwen3 pooling 模型，保持 causal attention，不构建或调用生成输出路径。
+- [ ] 3.2 用最小 dummy 模型验证 plugin pooling、extra_kwargs 跨进程传递、每题不同 K 的输出和请求 ID 对应关系。
+- [ ] 3.3 覆盖启动 profiling/dummy warm-up 的有效 metadata 路径，证明正常数据校验与 profiling 不冲突。
 - [ ] 3.4 验证 Ascend pooling 路径可执行；若需要后端补丁，记录最小复现、修改范围和为何不能仅在上游模型/Pooler 解决。
 
 ## 4. 输入编排和 pointer 计算
 
-- [x] 4.1 复现固定 KEV renderer、option_text、特殊 token 转义，覆盖嵌套 JSON、中文、布尔/null 与伪造分隔符。
-- [x] 4.2 构造每题独立的完整 token 序列和序列内索引，验证 position IDs、选项末尾位置、决策位置与参考完全一致。
-- [x] 4.3 实现按运行时 batch 偏移提取选项/决策表示，执行 FP32 pointer、温度校准与逐题 softmax，仅返回必要概率。
-- [x] 4.4 用固定 FP32 hidden states 验证 head atol/rtol <=1e-5，覆盖 bias、非默认温度、K=1/2/8/255 和变长 batch。
-- [x] 4.5 验证 batch 重排和多请求混排时的索引、结果映射及 padding，禁止按所有候选项做全局 softmax。
-- [x] 4.6 审查候选项循环中的设备同步、完整 hidden states 回传和额外归一化，保留必要的数据传输说明。
+- [ ] 4.1 复现固定 KEV renderer、option_text、特殊 token 转义，覆盖嵌套 JSON、中文、布尔/null 与伪造分隔符。
+- [ ] 4.2 构造每题独立的完整 token 序列和序列内索引，验证 position IDs、选项末尾位置、决策位置与参考完全一致。
+- [ ] 4.3 实现按运行时 batch 偏移提取选项/决策表示，执行 FP32 pointer、温度校准与逐题 softmax，仅返回必要概率。
+- [ ] 4.4 用固定 FP32 hidden states 验证 head atol/rtol <=1e-5，覆盖 bias、非默认温度、K=1/2/8/255 和变长 batch。
+- [ ] 4.5 验证 batch 重排和多请求混排时的索引、结果映射及 padding，禁止按所有候选项做全局 softmax。
+- [ ] 4.6 审查候选项循环中的设备同步、完整 hidden states 回传和额外归一化，保留必要的数据传输说明。
 
 ## 5. SystemOne API 和生命周期
 
-- [x] 5.1 新增三类型请求校验和 /v1/systemone 路由，仅在专用模型实例启用；覆盖未知字段/模型、生成参数与非有限数值。
-- [x] 5.2 实现 token 化后的全请求限额校验，覆盖最后一题超限时整个请求不提交、禁止静默截断。
-- [x] 5.3 实现原始概率上的 choice/noul/score 和 confidence 后处理、稳定并列规则与两位小数展示；与固定 KEV 后处理 golden 用例比较。
-- [x] 5.4 实现服务端父子请求 ID、有界队列、全局并发和单父 fan-out 上限，以及轮流提交父请求的调度。
-- [x] 5.5 实现乱序结果聚合和全成功响应，覆盖不同父请求使用相同 question ID 的情况。
-- [x] 5.6 实现包含排队的 deadline、客户端断连、单分支失败、engine abort 和资源释放，覆盖 429/500/503/504 错误及恢复后可继续服务。
-- [x] 5.7 实现规范 model ID、模型元数据、逻辑 usage 和端到端 latency；单独测试序列化 token 计数与两位小数求和偏差。
-- [x] 5.8 验证 KEV 实例拒绝聊天/生成请求，原有非 KEV 实例的路由与行为不受影响。
+- [ ] 5.1 新增三类型请求校验和 /v1/systemone 路由，仅在专用模型实例启用；覆盖未知字段/模型、生成参数与非有限数值。
+- [ ] 5.2 实现 token 化后的全请求限额校验，覆盖最后一题超限时整个请求不提交、禁止静默截断。
+- [ ] 5.3 实现原始概率上的 choice/noul/score 和 confidence 后处理、稳定并列规则与两位小数展示；与固定 KEV 后处理 golden 用例比较。
+- [ ] 5.4 实现服务端父子请求 ID、有界队列、全局并发和单父 fan-out 上限，以及轮流提交父请求的调度。
+- [ ] 5.5 实现乱序结果聚合和全成功响应，覆盖不同父请求使用相同 question ID 的情况。
+- [ ] 5.6 实现包含排队的 deadline、客户端断连、单分支失败、engine abort 和资源释放，覆盖 429/500/503/504 错误及恢复后可继续服务。
+- [ ] 5.7 实现规范 model ID、模型元数据、逻辑 usage 和端到端 latency；单独测试序列化 token 计数与两位小数求和偏差。
+- [ ] 5.8 验证 KEV 实例拒绝聊天/生成请求，原有非 KEV 实例的路由与行为不受影响。
 
 ## 6. 运行配置和可观测性
 
-- [x] 6.1 实现首版配置校验：TP=1、显式 dtype、eager，拒绝 APC/chunked prefill/图执行/量化/动态 LoRA；检查非分块 token 预算。
-- [x] 6.2 使就绪状态跟随制品验证、模型加载和有效决策 warm-up，覆盖 HTTP 已启动但模型不可执行的场景。
-- [x] 6.3 增加逻辑/实际输入 tokens、成功问题数/请求数、排队/端到端时间、在途量、错误/超时/取消 metrics，验证取消工作不计为成功吞吐。
+- [ ] 6.1 实现首版配置校验：TP=1、显式 dtype、eager，拒绝 APC/chunked prefill/图执行/量化/动态 LoRA；检查非分块 token 预算。
+- [ ] 6.2 使就绪状态跟随制品验证、模型加载和有效决策 warm-up，覆盖 HTTP 已启动但模型不可执行的场景。
+- [ ] 6.3 增加逻辑/实际输入 tokens、成功问题数/请求数、排队/端到端时间、在途量、错误/超时/取消 metrics，验证取消工作不计为成功吞吐。
 - [ ] 6.4 输出实际环境和制品版本诊断，明确 9.0.1 组合的验证状态、精度及功能范围。
 
 ## 7. Ascend 真实权重验收
@@ -60,10 +60,10 @@
 
 ## 8. 交付与文档
 
-- [x] 8.1 在本仓库交付固定上游基线的可应用 patch、SHA256 和上游 commit 引用，并验证其与实际测试代码一致。
-- [x] 8.2 增加相应 UT/ST、真实权重测试配置与 benchmark 入口，覆盖四份 spec 的全部场景。
-- [x] 8.3 增加中文模型教程并更新索引，提供导出、启动、三类型请求、限额、错误和回滚说明；未测指标不得填成通过。
-- [x] 8.4 形成环境、dummy/真实权重、数值和功能状态矩阵；共享前缀、分块、图执行和 Qwen3.5 明确标为后续范围。
-- [x] 8.5 运行变更相关测试、文档 lint 和仓库要求的格式检查，记录命令、结果及任何环境阻塞；完成规范到证据的逐项核对。
+- [ ] 8.1 在本仓库交付固定上游基线的可应用 patch、SHA256 和上游 commit 引用，并验证其与实际测试代码一致。
+- [ ] 8.2 增加相应 UT/ST、真实权重测试配置与 benchmark 入口，覆盖四份 spec 的全部场景。
+- [ ] 8.3 增加中文模型教程并更新索引，提供导出、启动、三类型请求、限额、错误和回滚说明；未测指标不得填成通过。
+- [ ] 8.4 形成环境、dummy/真实权重、数值和功能状态矩阵；共享前缀、分块、图执行和 Qwen3.5 明确标为后续范围。
+- [ ] 8.5 运行变更相关测试、文档 lint 和仓库要求的格式检查，记录命令、结果及任何环境阻塞；完成规范到证据的逐项核对。
 
 任务完成条件由四份 specs 和 design.md 中的验收标准约束。OpenSpec 文档校验通过不勾选上述任何实现任务；环境阻塞允许继续不依赖 NPU 的工作，但不能跳过真实权重验收。

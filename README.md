@@ -15,19 +15,15 @@
 ```text
 .
 ├── openspec/            # OpenSpec 规范定义、变更提案与任务跟踪 (add-kev-qwen3-decision-serving)
-├── evidence/            # 交付凭据：环境报告、特性支持矩阵、上游与昇腾补丁及 SHA256 校验
-│   ├── vllm_upstream_kev.patch
-│   ├── vllm_ascend_kev.patch
-│   ├── task_1_report.md
-│   └── task_8_4_matrix.md
-├── vllm-ascend/         # vLLM-Ascend 昇腾适配与测试套件 (分支: codex/kev-qwen3)
-├── vllm-upstream/       # 上游 vLLM 核心逻辑实现与测试 (分支: codex/kev-qwen3)
+├── evidence/            # 重新实施过程中产生的环境、测试、补丁及校验证据
+├── vllm-ascend/         # vLLM-Ascend 基线及后续昇腾适配
+├── vllm-upstream/       # 上游 vLLM v0.26.0 基线及后续通用实现
 ├── kev-reference/       # KEV 原始参考实现引用 (固定 commit: 90990a5f)
 └── .agent/              # OpenSpec Agent 技能与工作流配置
 ```
 
-## 交付与补丁说明
+## 当前实施状态
 
-- 上游 vLLM 补丁：[`evidence/vllm_upstream_kev.patch`](evidence/vllm_upstream_kev.patch)
-- vLLM-Ascend 补丁：[`evidence/vllm_ascend_kev.patch`](evidence/vllm_ascend_kev.patch)
-- 详细规格与任务进展请参考 [`openspec/changes/add-kev-qwen3-decision-serving/`](openspec/changes/add-kev-qwen3-decision-serving/)。
+`gpt-dev-fresh` 从未实施状态开始。OpenSpec 的 proposal、design 和 specs 保留为开发输入，任务清单已全部重置；代码、测试与验收证据将按任务完成情况重新产生。
+
+详细规格与任务进展请参考 [`openspec/changes/add-kev-qwen3-decision-serving/`](openspec/changes/add-kev-qwen3-decision-serving/)。
