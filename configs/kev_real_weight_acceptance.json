@@ -1,0 +1,75 @@
+{
+  "format_version": 1,
+  "model": {
+    "artifact_path": "/models/serving/kev-qwen3-4b",
+    "model_id": "kev-qwen3-4b",
+    "source_revision": "c4bfa11b0dc07691884f2d97f1c4c4c05c92e416",
+    "base_revision": "906bfd4b4dc7f14ee4320094d8b41684abff8539",
+    "reference_revision": "90990a5fac2995b9faa3190f7d437e84f2067768"
+  },
+  "server": {
+    "endpoint": "http://127.0.0.1:8000/v1/systemone",
+    "metrics_endpoint": "http://127.0.0.1:8000/metrics",
+    "timeout_seconds": 30
+  },
+  "datasets": {
+    "parity_jsonl": "/data/kev/frozen-parity.jsonl",
+    "boundary_jsonl": "/data/kev/frozen-boundary.jsonl",
+    "state_workloads_json": "/data/kev/verified-state-workloads.json"
+  },
+  "coverage": {
+    "question_types": ["noul", "choice", "score"],
+    "minimum_questions": 200,
+    "minimum_per_type": 30,
+    "required_features": [
+      "chinese",
+      "english",
+      "nested_json",
+      "control_like_text",
+      "variable_length",
+      "variable_options"
+    ],
+    "boundary_option_counts": [1, 2, 8, 255],
+    "lifecycle": [
+      "timeout",
+      "disconnect",
+      "single_branch_failure",
+      "recovery"
+    ]
+  },
+  "thresholds": {
+    "mean_probability_absolute_error": 0.002,
+    "max_probability_absolute_error": 0.02,
+    "argmax_agreement": 0.99,
+    "clear_winner_margin": 0.04,
+    "clear_winner_argmax_agreement": 1.0,
+    "batch_max_probability_delta": 0.005,
+    "batch_stable_margin": 0.01,
+    "probability_sum_tolerance": 0.000001,
+    "business_thresholds": [0.5, 0.8, 0.9]
+  },
+  "benchmark": {
+    "warmup_requests": 3,
+    "measured_requests": 20,
+    "baseline": {
+      "state_tokens": 128,
+      "question_count": 1,
+      "option_count": 2,
+      "concurrency": 1
+    },
+    "single_factor": {
+      "state_tokens": [128, 1024, 4096],
+      "question_count": [1, 4, 16],
+      "option_count": [2, 8, 32],
+      "concurrency": [1, 4, 16]
+    },
+    "multi_factor": [
+      {
+        "state_tokens": 1024,
+        "question_count": 4,
+        "option_count": 8,
+        "concurrency": 4
+      }
+    ]
+  }
+}

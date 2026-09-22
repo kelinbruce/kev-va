@@ -1,0 +1,2958 @@
+diff --git a/tests/entrypoints/pooling/systemone/test_api_router.py b/tests/entrypoints/pooling/systemone/test_api_router.py
+new file mode 100644
+index 000000000..b62dfac13
+--- /dev/null
++++ b/tests/entrypoints/pooling/systemone/test_api_router.py
+@@ -0,0 +1,121 @@
++# SPDX-License-Identifier: Apache-2.0
++
++from types import SimpleNamespace
++
++import httpx
++import pytest
++from fastapi import FastAPI
++
++from vllm.entrypoints.pooling.systemone.api_router import router
++
++
++class Service:
++    def __init__(self, error=None):
++        self.error = error
++        self.requests = []
++        self.errors = []
++
++    def record_error(self, code):
++        self.errors.append(code)
++
++    async def decide(self, request, disconnected):
++        self.requests.append(request)
++        if self.error is not None:
++            raise self.error
++        return SimpleNamespace(
++            model="kev-qwen3-4b",
++            answers={
++                "binary": {"type": "noul", "noul": 0.75},
++                "pick": {
++                    "type": "choice",
++                    "choice": "b",
++                    "confidence": 0.5,
++                    "probabilities": {"a": 0.25, "b": 0.75},
++                },
++                "rate": {
++                    "type": "score",
++                    "score": 1.4,
++                    "legend": {"0": "low", "1": "medium", "2": "high"},
++                    "probabilities": {"0": 0.1, "1": 0.4, "2": 0.5},
++                    "confidence": 0.55,
++                },
++            },
++            input_tokens=123,
++            output_tokens=45,
++            latency_ms=3.5,
++        )
++
++
++def payload():
++    return {
++        "model": "kev-latest",
++        "state": {"topic": "test"},
++        "questions": {
++            "binary": {"type": "noul", "instructions": "decide"},
++            "pick": {
++                "type": "choice",
++                "instructions": "pick",
++                "criteria": {"a": "first", "b": "second"},
++            },
++            "rate": {
++                "type": "score",
++                "instructions": "rate",
++                "criteria": ["low", "medium", "high"],
++            },
++        },
++    }
++
++
++async def post(app, value):
++    transport = httpx.ASGITransport(app=app)
++    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
++        return await client.post("/v1/systemone", json=value)
++
++
++@pytest.mark.asyncio
++async def test_systemone_route_returns_contract_and_usage():
++    app = FastAPI()
++    app.include_router(router)
++    service = Service()
++    app.state.serving_systemone = service
++    response = await post(app, payload())
++
++    assert response.status_code == 200
++    assert response.json()["model"] == "kev-qwen3-4b"
++    assert list(response.json()["answers"]) == ["binary", "pick", "rate"]
++    assert response.json()["usage"] == {"input_tokens": 123, "output_tokens": 45}
++    assert response.json()["latency_ms"] == 3.5
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize(
++    "mutate",
++    [
++        lambda value: value.update({"unknown": True}),
++        lambda value: value["questions"]["pick"].update({"unknown": True}),
++        lambda value: value.update({"questions": {}}),
++    ],
++)
++async def test_systemone_route_returns_structured_validation_errors(mutate):
++    app = FastAPI()
++    app.include_router(router)
++    service = Service()
++    app.state.serving_systemone = service
++    value = payload()
++    mutate(value)
++    response = await post(app, value)
++
++    assert response.status_code == 422
++    assert response.json()["error"]["type"] == "invalid_request_error"
++    assert response.json()["error"]["code"] == "invalid_request"
++    assert response.json()["error"]["param"] is None
++    assert service.errors == ["invalid_request"]
++
++
++@pytest.mark.asyncio
++async def test_systemone_route_is_unavailable_without_service():
++    app = FastAPI()
++    app.include_router(router)
++    response = await post(app, payload())
++    assert response.status_code == 404
++    assert response.json()["error"]["code"] == "unsupported_endpoint"
+diff --git a/tests/entrypoints/pooling/systemone/test_backend.py b/tests/entrypoints/pooling/systemone/test_backend.py
+new file mode 100644
+index 000000000..3eae76d71
+--- /dev/null
++++ b/tests/entrypoints/pooling/systemone/test_backend.py
+@@ -0,0 +1,70 @@
++# SPDX-License-Identifier: Apache-2.0
++
++from types import SimpleNamespace
++
++import pytest
++import torch
++
++from vllm.entrypoints.pooling.systemone.backend import EngineDecisionBackend
++from vllm.entrypoints.pooling.systemone.renderer import PreparedQuestion
++
++
++def question():
++    return PreparedQuestion(
++        question_id="q",
++        question_type="choice",
++        keys=("a", "b"),
++        token_ids=(10, 11, 12),
++        position_ids=(0, 1, 2),
++        option_end_indices=(1, 2),
++        decision_index=2,
++    )
++
++
++class Engine:
++    def __init__(self, outputs=None):
++        self.outputs = (torch.tensor([0.25, 0.75]),) if outputs is None else outputs
++        self.calls = []
++        self.aborted = []
++
++    async def encode(self, prompt, params, request_id):
++        self.calls.append((prompt, params, request_id))
++        for output in self.outputs:
++            yield SimpleNamespace(outputs=SimpleNamespace(data=output))
++
++    async def abort(self, request_ids):
++        self.aborted.append(request_ids)
++
++
++@pytest.mark.asyncio
++async def test_engine_backend_submits_tokens_and_metadata():
++    engine = Engine()
++    backend = EngineDecisionBackend(engine)
++    result = await backend.infer("parent/0", question())
++
++    assert result == [0.25, 0.75]
++    prompt, params, request_id = engine.calls[0]
++    assert prompt == {"prompt_token_ids": [10, 11, 12]}
++    assert request_id == "parent/0"
++    assert params.task == "plugin"
++    assert params.extra_kwargs == {
++        "version": 1,
++        "option_end_indices": [1, 2],
++        "decision_index": 2,
++    }
++
++
++@pytest.mark.asyncio
++async def test_engine_backend_uses_last_output_and_forwards_abort():
++    engine = Engine((torch.tensor([1.0, 0.0]), torch.tensor([0.0, 1.0])))
++    backend = EngineDecisionBackend(engine)
++    assert await backend.infer("request", question()) == [0.0, 1.0]
++    await backend.abort(("request", "sibling"))
++    assert engine.aborted == [("request", "sibling")]
++
++
++@pytest.mark.asyncio
++async def test_engine_backend_rejects_missing_output():
++    backend = EngineDecisionBackend(Engine(()))
++    with pytest.raises(RuntimeError, match="no output"):
++        await backend.infer("request", question())
+diff --git a/tests/entrypoints/pooling/systemone/test_factory.py b/tests/entrypoints/pooling/systemone/test_factory.py
+new file mode 100644
+index 000000000..4b961f37d
+--- /dev/null
++++ b/tests/entrypoints/pooling/systemone/test_factory.py
+@@ -0,0 +1,105 @@
++# SPDX-License-Identifier: Apache-2.0
++
++import hashlib
++import json
++from types import SimpleNamespace
++
++import pytest
++from fastapi import FastAPI
++
++from vllm.entrypoints.pooling.factories import (
++    is_systemone_model,
++    register_pooling_api_routers,
++)
++from vllm.entrypoints.pooling.systemone.artifact import validate_runtime_artifact
++from vllm.entrypoints.pooling.systemone.renderer import STRUCTURAL_TOKENS
++
++
++def config(architecture):
++    return SimpleNamespace(
++        architecture=architecture,
++        get_pooling_task=lambda supported_tasks: "plugin" if supported_tasks else None,
++    )
++
++
++def paths(app):
++    return {route.path for route in app.routes}
++
++
++def test_systemone_route_is_only_registered_for_dedicated_architecture():
++    kev_app = FastAPI()
++    register_pooling_api_routers(kev_app, (), config("KevQwen3ForDecision"))
++    assert "/v1/systemone" in paths(kev_app)
++    assert is_systemone_model(config("KevQwen3ForDecision"))
++
++    qwen_app = FastAPI()
++    register_pooling_api_routers(qwen_app, (), config("Qwen3ForCausalLM"))
++    assert "/v1/systemone" not in paths(qwen_app)
++    assert not is_systemone_model(config("Qwen3ForCausalLM"))
++
++
++def artifact(tmp_path):
++    files = {
++        "config.json": b"{}",
++        "model.safetensors": b"backbone",
++        "kev-head.safetensors": b"head",
++        "tokenizer.json": b"{}",
++        "tokenizer_config.json": b"{}",
++    }
++    weight_map = {
++        "model.embed_tokens.weight": "model.safetensors",
++        "pooler.q.weight": "kev-head.safetensors",
++        "pooler.q.bias": "kev-head.safetensors",
++        "pooler.k.weight": "kev-head.safetensors",
++        "pooler.k.bias": "kev-head.safetensors",
++    }
++    files["model.safetensors.index.json"] = json.dumps(
++        {"weight_map": weight_map}
++    ).encode()
++    for name, value in files.items():
++        tmp_path.joinpath(name).write_bytes(value)
++    token_ids = {token: 100 + index for index, token in enumerate(STRUCTURAL_TOKENS)}
++    manifest = {
++        "format_version": 1,
++        "architecture": "KevQwen3ForDecision",
++        "option_isolation": False,
++        "temperature": 2.5,
++        "head_dim": 4,
++        "backbone_dtype": "bfloat16",
++        "structural_token_ids": token_ids,
++        "sources": {
++            "checkpoint_revision": "1" * 40,
++            "base_revision": "2" * 40,
++            "reference_revision": "3" * 40,
++            "files_sha256": {
++                "adapter_config.json": "4" * 64,
++                "adapter_model.safetensors": "5" * 64,
++                "head.pt": "6" * 64,
++            },
++        },
++        "files_sha256": {
++            name: hashlib.sha256(value).hexdigest() for name, value in files.items()
++        },
++    }
++    tmp_path.joinpath("kev_manifest.json").write_text(json.dumps(manifest))
++    model_config = SimpleNamespace(
++        model=str(tmp_path),
++        architecture="KevQwen3ForDecision",
++        hf_config=SimpleNamespace(
++            kev_head_dim=4,
++            kev_temperature=2.5,
++            kev_backbone_dtype="bfloat16",
++        ),
++    )
++    tokenizer = SimpleNamespace(convert_tokens_to_ids=token_ids.__getitem__)
++    return model_config, tokenizer
++
++
++def test_runtime_artifact_validation_gates_readiness(tmp_path):
++    model_config, tokenizer = artifact(tmp_path)
++    manifest = validate_runtime_artifact(model_config, tokenizer)
++    assert manifest["sources"]["base_revision"] == "2" * 40
++
++    tmp_path.joinpath("model.safetensors").write_bytes(b"corrupt")
++    with pytest.raises(ValueError, match="checksum mismatch: model.safetensors"):
++        validate_runtime_artifact(model_config, tokenizer)
+diff --git a/tests/entrypoints/pooling/systemone/test_protocol.py b/tests/entrypoints/pooling/systemone/test_protocol.py
+new file mode 100644
+index 000000000..84a82fa88
+--- /dev/null
++++ b/tests/entrypoints/pooling/systemone/test_protocol.py
+@@ -0,0 +1,179 @@
++# SPDX-License-Identifier: Apache-2.0
++
++from types import SimpleNamespace
++
++import pytest
++from pydantic import ValidationError
++
++from vllm.entrypoints.pooling.systemone.protocol import SystemOneRequest
++from vllm.entrypoints.pooling.systemone.renderer import (
++    STRUCTURAL_TOKENS,
++    Limits,
++    prepare_questions,
++    prepare_request,
++    render_json,
++)
++
++
++class CharacterTokenizer:
++    structural_ids = {
++        token: 1000 + index for index, token in enumerate(STRUCTURAL_TOKENS)
++    }
++
++    def __call__(self, text, *, add_special_tokens):
++        assert add_special_tokens is False
++        return SimpleNamespace(input_ids=[ord(character) for character in text])
++
++    def convert_tokens_to_ids(self, token):
++        return self.structural_ids.get(token, -1)
++
++
++def request(**changes):
++    payload = {
++        "state": {"中文": [True, None, {"count": 2}]},
++        "questions": {
++            "choice": {
++                "type": "choice",
++                "instructions": "pick <|fim_suffix|>",
++                "criteria": {"a": "first", "b": {"nested": False}},
++            },
++            "noul": {
++                "type": "noul",
++                "instructions": "is valid?",
++            },
++            "score": {
++                "type": "score",
++                "instructions": ["rate", 3],
++                "criteria": ["low", "high"],
++            },
++        },
++    }
++    payload.update(changes)
++    return SystemOneRequest.model_validate(payload)
++
++
++def test_protocol_rejects_unknown_fields_and_non_finite_values():
++    with pytest.raises(ValidationError, match="extra_forbidden"):
++        request(stream=True)
++    with pytest.raises(ValidationError, match="finite"):
++        request(state={"nested": [float("nan")]})
++
++
++@pytest.mark.parametrize(
++    "question",
++    [
++        {"type": "choice", "instructions": "x", "criteria": {}},
++        {"type": "score", "instructions": "x", "criteria": ["only"]},
++        {
++            "type": "noul",
++            "instructions": "x",
++            "criteria": {"maybe": "unknown"},
++        },
++    ],
++)
++def test_protocol_rejects_invalid_question_shapes(question):
++    with pytest.raises(ValidationError):
++        request(questions={"invalid": question})
++
++
++def test_rendering_matches_fixed_kev_rules():
++    assert render_json({"a": [True, None], "b": {"c": 2}}) == (
++        "a:\n  - True\n  - \nb:\n  c: 2"
++    )
++
++
++def test_prepared_questions_have_isolated_sequences_and_readout_indices():
++    tokenizer = CharacterTokenizer()
++    prepared = prepare_questions(request(), tokenizer)
++
++    assert [item.question_id for item in prepared] == ["choice", "noul", "score"]
++    assert [item.keys for item in prepared] == [
++        ("a", "b"),
++        ("false", "true"),
++        ("0", "1"),
++    ]
++    for item in prepared:
++        assert item.token_ids[0] == tokenizer.structural_ids[STRUCTURAL_TOKENS[0]]
++        assert item.token_ids[-1] == tokenizer.structural_ids[STRUCTURAL_TOKENS[4]]
++        assert item.position_ids == tuple(range(len(item.token_ids)))
++        assert item.decision_index == len(item.token_ids) - 1
++        assert all(
++            item.token_ids[index] == tokenizer.structural_ids[STRUCTURAL_TOKENS[3]]
++            for index in item.option_end_indices
++        )
++    decision_token_id = tokenizer.structural_ids[STRUCTURAL_TOKENS[4]]
++    assert decision_token_id not in prepared[0].token_ids[:-1]
++
++
++def test_question_id_is_mapping_only():
++    tokenizer = CharacterTokenizer()
++    original = request()
++    renamed = request(
++        questions={
++            "renamed": original.questions["choice"].model_dump(),
++        }
++    )
++    original_branch = prepare_questions(
++        request(questions={"choice": original.questions["choice"].model_dump()}),
++        tokenizer,
++    )[0]
++    renamed_branch = prepare_questions(renamed, tokenizer)[0]
++
++    assert renamed_branch.question_id == "renamed"
++    assert renamed_branch.token_ids == original_branch.token_ids
++    assert renamed_branch.option_end_indices == original_branch.option_end_indices
++
++
++def test_preparation_reports_logical_and_actual_token_usage():
++    tokenizer = CharacterTokenizer()
++    prepared = prepare_request(request(), tokenizer)
++
++    expected_actual = sum(len(question.token_ids) for question in prepared.questions)
++    expected_logical = prepared.state_tokens + sum(
++        len(question.token_ids) - prepared.state_tokens
++        for question in prepared.questions
++    )
++    assert prepared.actual_input_tokens == expected_actual
++    assert prepared.logical_input_tokens == expected_logical
++    assert prepared.actual_input_tokens > prepared.logical_input_tokens
++
++
++def test_last_question_limit_failure_rejects_the_whole_request():
++    tokenizer = CharacterTokenizer()
++    value = request(
++        state="s",
++        questions={
++            "valid": {
++                "type": "choice",
++                "instructions": "x",
++                "criteria": {"a": ""},
++            },
++            "too_long": {
++                "type": "choice",
++                "instructions": "x" * 20,
++                "criteria": {"a": ""},
++            },
++        },
++    )
++
++    with pytest.raises(ValueError, match="too_long.*branch tokens"):
++        prepare_request(value, tokenizer, Limits(max_branch_tokens=15))
++
++
++def test_state_and_logical_limits_use_tokenized_lengths_without_truncation():
++    tokenizer = CharacterTokenizer()
++    value = request(
++        state="abcd",
++        questions={
++            "one": {
++                "type": "choice",
++                "instructions": "x",
++                "criteria": {"a": ""},
++            }
++        },
++    )
++
++    with pytest.raises(ValueError, match="state exceeds 4"):
++        prepare_request(value, tokenizer, Limits(max_state_tokens=4))
++    with pytest.raises(ValueError, match="logical input tokens"):
++        prepare_request(value, tokenizer, Limits(max_logical_tokens=8))
+diff --git a/tests/entrypoints/pooling/systemone/test_responses.py b/tests/entrypoints/pooling/systemone/test_responses.py
+new file mode 100644
+index 000000000..bb8d45f81
+--- /dev/null
++++ b/tests/entrypoints/pooling/systemone/test_responses.py
+@@ -0,0 +1,99 @@
++# SPDX-License-Identifier: Apache-2.0
++
++import pytest
++
++from vllm.entrypoints.pooling.systemone.renderer import PreparedQuestion
++from vllm.entrypoints.pooling.systemone.responses import (
++    answer_from_probabilities,
++    answers_from_probabilities,
++    serialized_output_tokens,
++)
++
++
++def prepared(question_id, question_type, keys, legend=None):
++    return PreparedQuestion(
++        question_id=question_id,
++        question_type=question_type,
++        keys=tuple(keys),
++        token_ids=(1,),
++        position_ids=(0,),
++        option_end_indices=(0,) * len(keys),
++        decision_index=0,
++        legend=legend,
++    )
++
++
++def test_noul_and_score_match_fixed_kev_golden_values():
++    questions = [
++        prepared("boolean", "noul", ["false", "true"]),
++        prepared(
++            "ordinal",
++            "score",
++            ["0", "1", "2"],
++            {"0": "low", "1": "medium", "2": "high"},
++        ),
++    ]
++
++    assert answers_from_probabilities(questions, [[0.05, 0.95], [0.1, 0.7, 0.2]]) == {
++        "boolean": {"type": "noul", "noul": 0.95},
++        "ordinal": {
++            "type": "score",
++            "score": 1.1,
++            "legend": {"0": "low", "1": "medium", "2": "high"},
++            "probabilities": {"0": 0.1, "1": 0.7, "2": 0.2},
++            "confidence": 0.85,
++        },
++    }
++
++
++def test_choice_uses_raw_probabilities_before_rounding_and_stable_ties():
++    question = prepared("choice", "choice", ["a", "b"])
++
++    rounded_tie = answer_from_probabilities(question, [0.499, 0.501])
++    exact_tie = answer_from_probabilities(question, [0.5, 0.5])
++
++    assert rounded_tie["probabilities"] == {"a": 0.5, "b": 0.5}
++    assert rounded_tie["choice"] == "b"
++    assert exact_tie["choice"] == "a"
++
++
++def test_single_choice_confidence_is_one():
++    question = prepared("choice", "choice", ["only"])
++
++    assert answer_from_probabilities(question, [1.0])["confidence"] == 1.0
++
++
++@pytest.mark.parametrize(
++    "probabilities",
++    [[0.2, 0.2], [0.5, float("nan")], [1.1, -0.1], [1.0]],
++)
++def test_invalid_probability_distributions_are_rejected(probabilities):
++    question = prepared("choice", "choice", ["a", "b"])
++
++    with pytest.raises(ValueError):
++        answer_from_probabilities(question, probabilities)
++
++
++def test_result_count_must_match_questions():
++    question = prepared("choice", "choice", ["a"])
++
++    with pytest.raises(ValueError, match="count"):
++        answers_from_probabilities([question], [])
++
++
++def test_output_usage_counts_fixed_kev_json_serialization():
++    class RecordingTokenizer:
++        def __call__(self, text, *, add_special_tokens):
++            assert text == '{"q": {"probabilities": {"a": 0.33, "b": 0.67}}}'
++            assert add_special_tokens is False
++            return type("Tokens", (), {"input_ids": [1, 2, 3, 4]})()
++
++    answers = {"q": {"probabilities": {"a": 0.33, "b": 0.67}}}
++    assert serialized_output_tokens(RecordingTokenizer(), answers) == 4
++
++
++def test_display_probabilities_are_not_renormalized_after_rounding():
++    question = prepared("choice", "choice", ["a", "b", "c"])
++    answer = answer_from_probabilities(question, [0.334, 0.333, 0.333])
++    assert answer["probabilities"] == {"a": 0.33, "b": 0.33, "c": 0.33}
++    assert sum(answer["probabilities"].values()) == pytest.approx(0.99)
+diff --git a/tests/entrypoints/pooling/systemone/test_serving.py b/tests/entrypoints/pooling/systemone/test_serving.py
+new file mode 100644
+index 000000000..95659e2f0
+--- /dev/null
++++ b/tests/entrypoints/pooling/systemone/test_serving.py
+@@ -0,0 +1,333 @@
++# SPDX-License-Identifier: Apache-2.0
++
++import asyncio
++from types import SimpleNamespace
++
++import pytest
++
++from vllm.entrypoints.pooling.systemone.protocol import SystemOneRequest
++from vllm.entrypoints.pooling.systemone.renderer import STRUCTURAL_TOKENS, Limits
++from vllm.entrypoints.pooling.systemone.serving import SystemOneError, SystemOneService
++
++
++class CharacterTokenizer:
++    structural_ids = {
++        token: 1000 + index for index, token in enumerate(STRUCTURAL_TOKENS)
++    }
++
++    def __call__(self, text, *, add_special_tokens):
++        return SimpleNamespace(input_ids=[ord(character) for character in text])
++
++    def convert_tokens_to_ids(self, token):
++        return self.structural_ids.get(token, -1)
++
++
++class Backend:
++    def __init__(self):
++        self.calls = []
++        self.aborted = []
++        self.release = asyncio.Event()
++        self.release.set()
++        self.fail_question = None
++        self.active = 0
++        self.max_active = 0
++        self.active_by_parent = {}
++        self.max_active_by_parent = {}
++        self.delays = {}
++        self.probabilities_from_state = False
++
++    async def infer(self, request_id, question):
++        parent_id = request_id.rsplit("/", 1)[0]
++        self.calls.append((request_id, question.question_id))
++        self.active += 1
++        self.max_active = max(self.max_active, self.active)
++        self.active_by_parent[parent_id] = self.active_by_parent.get(parent_id, 0) + 1
++        self.max_active_by_parent[parent_id] = max(
++            self.max_active_by_parent.get(parent_id, 0),
++            self.active_by_parent[parent_id],
++        )
++        try:
++            await self.release.wait()
++            await asyncio.sleep(self.delays.get(question.question_id, 0))
++            if question.question_id == self.fail_question:
++                raise RuntimeError("injected failure")
++            if len(question.keys) == 1:
++                return [1.0]
++            if self.probabilities_from_state:
++                return (
++                    [0.75, 0.25] if question.token_ids[1] == ord("f") else [0.25, 0.75]
++                )
++            return [0.25, 0.75] + [0.0] * (len(question.keys) - 2)
++        finally:
++            self.active -= 1
++            self.active_by_parent[parent_id] -= 1
++
++    async def abort(self, request_ids):
++        self.aborted.append(tuple(request_ids))
++        self.release.set()
++
++
++class Metrics:
++    def __init__(self):
++        self.requests = 0
++        self.branches = 0
++        self.queue_seconds = []
++        self.durations = []
++        self.successes = []
++        self.errors = []
++
++    def request_started(self):
++        self.requests += 1
++
++    def request_finished(self, duration_seconds):
++        self.requests -= 1
++        self.durations.append(duration_seconds)
++
++    def branch_started(self, queue_seconds):
++        self.branches += 1
++        self.queue_seconds.append(queue_seconds)
++
++    def branch_finished(self):
++        self.branches -= 1
++
++    def request_succeeded(self, logical_tokens, actual_tokens, questions):
++        self.successes.append((logical_tokens, actual_tokens, questions))
++
++    def request_failed(self, code):
++        self.errors.append(code)
++
++
++def request(state="state", question_ids=("one", "two")):
++    return SystemOneRequest.model_validate(
++        {
++            "model": "kev-latest",
++            "state": state,
++            "questions": {
++                question_id: {
++                    "type": "choice",
++                    "instructions": question_id,
++                    "criteria": {"a": "first", "b": "second"},
++                }
++                for question_id in question_ids
++            },
++        }
++    )
++
++
++def service(backend, **kwargs):
++    value = SystemOneService(
++        backend,
++        CharacterTokenizer(),
++        "kev-qwen3-4b",
++        **kwargs,
++    )
++    value.set_ready(True)
++    return value
++
++
++@pytest.mark.asyncio
++async def test_warmup_requires_a_valid_model_decision_before_readiness():
++    backend = Backend()
++    value = SystemOneService(backend, CharacterTokenizer(), "kev-qwen3-4b")
++    try:
++        assert value.ready is False
++        await value.warmup()
++        assert value.ready is True
++        assert backend.calls[0][1] == "warmup"
++    finally:
++        await value.close()
++
++
++@pytest.mark.asyncio
++async def test_failed_warmup_keeps_endpoint_unready_and_aborts_request():
++    backend = Backend()
++    backend.fail_question = "warmup"
++    value = SystemOneService(backend, CharacterTokenizer(), "kev-qwen3-4b")
++    try:
++        with pytest.raises(RuntimeError, match="injected failure"):
++            await value.warmup()
++        assert value.ready is False
++        assert value.readiness_error == "RuntimeError"
++        assert backend.aborted[0][0].startswith("systemone-warmup-")
++    finally:
++        await value.close()
++
++
++@pytest.mark.asyncio
++async def test_unknown_model_and_not_ready_reject_without_submission():
++    backend = Backend()
++    value = service(backend)
++    try:
++        unknown = request().model_copy(update={"model": "unknown"})
++        with pytest.raises(SystemOneError) as missing:
++            await value.decide(unknown)
++        assert missing.value.status == 404
++
++        value.set_ready(False)
++        with pytest.raises(SystemOneError) as unavailable:
++            await value.decide(request())
++        assert unavailable.value.status == 503
++        assert backend.calls == []
++    finally:
++        await value.close()
++
++
++@pytest.mark.asyncio
++async def test_full_request_is_validated_before_any_child_submission():
++    backend = Backend()
++    value = service(backend, limits=Limits(max_branch_tokens=25))
++    invalid = request(question_ids=("ok", "this-question-is-too-long"))
++    try:
++        with pytest.raises(SystemOneError) as caught:
++            await value.decide(invalid)
++        assert caught.value.status == 422
++        assert backend.calls == []
++    finally:
++        await value.close()
++
++
++@pytest.mark.asyncio
++async def test_out_of_order_parents_with_same_question_id_do_not_mix_results():
++    backend = Backend()
++    backend.probabilities_from_state = True
++    value = service(backend, global_children=2, per_parent_children=1)
++    try:
++        first, second = await asyncio.gather(
++            value.decide(request("first", ("same",))),
++            value.decide(request("second", ("same",))),
++        )
++        assert first.answers["same"]["choice"] == "a"
++        assert second.answers["same"]["choice"] == "b"
++        assert first.input_tokens != second.input_tokens
++        assert first.output_tokens > 0
++    finally:
++        await value.close()
++
++
++@pytest.mark.asyncio
++async def test_success_metrics_include_tokens_questions_queue_and_duration():
++    backend = Backend()
++    metrics = Metrics()
++    value = service(backend, metrics=metrics)
++    try:
++        result = await value.decide(request())
++        assert metrics.successes == [
++            (result.input_tokens, result.actual_input_tokens, 2)
++        ]
++        assert metrics.errors == []
++        assert len(metrics.queue_seconds) == 2
++        assert len(metrics.durations) == 1
++        assert metrics.requests == 0
++        assert metrics.branches == 0
++    finally:
++        await value.close()
++
++
++@pytest.mark.asyncio
++async def test_out_of_order_children_are_aggregated_in_input_order():
++    backend = Backend()
++    backend.delays["slow"] = 0.02
++    value = service(backend, global_children=2, per_parent_children=2)
++    try:
++        result = await value.decide(request(question_ids=("slow", "fast")))
++        assert list(result.answers) == ["slow", "fast"]
++        assert [question_id for _, question_id in backend.calls] == ["slow", "fast"]
++    finally:
++        await value.close()
++
++
++@pytest.mark.asyncio
++async def test_scheduler_gives_concurrent_parents_turns():
++    backend = Backend()
++    backend.release.clear()
++    value = service(backend, global_children=2, per_parent_children=1)
++    first = asyncio.create_task(value.decide(request(question_ids=("a0", "a1"))))
++    second = asyncio.create_task(value.decide(request(question_ids=("b0", "b1"))))
++    try:
++        while len(backend.calls) < 2:
++            await asyncio.sleep(0)
++        assert {question_id for _, question_id in backend.calls[:2]} == {"a0", "b0"}
++    finally:
++        backend.release.set()
++        await asyncio.gather(first, second)
++        await value.close()
++
++
++@pytest.mark.asyncio
++async def test_parent_and_child_capacity_limits_are_enforced():
++    backend = Backend()
++    backend.release.clear()
++    value = service(
++        backend,
++        max_parents=1,
++        global_children=2,
++        per_parent_children=1,
++    )
++    first = asyncio.create_task(value.decide(request(question_ids=("a", "b", "c"))))
++    try:
++        while not backend.calls:
++            await asyncio.sleep(0)
++        with pytest.raises(SystemOneError) as caught:
++            await value.decide(request(question_ids=("other",)))
++        assert caught.value.status == 429
++        assert backend.max_active <= 2
++        assert max(backend.max_active_by_parent.values()) <= 1
++    finally:
++        backend.release.set()
++        await first
++        await value.close()
++
++
++@pytest.mark.asyncio
++async def test_branch_failure_aborts_siblings_and_service_recovers():
++    backend = Backend()
++    backend.fail_question = "bad"
++    value = service(backend, global_children=2, per_parent_children=2)
++    try:
++        with pytest.raises(SystemOneError) as caught:
++            await value.decide(request(question_ids=("bad", "sibling")))
++        assert caught.value.status == 500
++        assert backend.aborted
++
++        backend.fail_question = None
++        result = await value.decide(request(question_ids=("recovered",)))
++        assert result.answers["recovered"]["choice"] == "b"
++    finally:
++        await value.close()
++
++
++@pytest.mark.asyncio
++async def test_timeout_and_disconnect_abort_all_children():
++    backend = Backend()
++    backend.release.clear()
++    metrics = Metrics()
++    value = service(
++        backend,
++        global_children=2,
++        per_parent_children=2,
++        deadline_seconds=0.02,
++        metrics=metrics,
++    )
++    try:
++        with pytest.raises(SystemOneError) as timeout:
++            await value.decide(request())
++        assert timeout.value.status == 504
++        assert backend.aborted
++
++        backend.release.clear()
++        disconnected = asyncio.Event()
++        task = asyncio.create_task(value.decide(request(), disconnected))
++        while len(backend.calls) < 3:
++            await asyncio.sleep(0)
++        disconnected.set()
++        with pytest.raises(SystemOneError) as cancelled:
++            await task
++        assert cancelled.value.status == 499
++        assert len(backend.aborted) == 2
++        assert metrics.successes == []
++        assert metrics.errors == ["deadline_exceeded", "client_disconnected"]
++        assert metrics.requests == 0
++        assert metrics.branches == 0
++    finally:
++        backend.release.set()
++        await value.close()
+diff --git a/tests/model_executor/layers/test_kev_pooler.py b/tests/model_executor/layers/test_kev_pooler.py
+new file mode 100644
+index 000000000..1f89adc1b
+--- /dev/null
++++ b/tests/model_executor/layers/test_kev_pooler.py
+@@ -0,0 +1,226 @@
++# SPDX-License-Identifier: Apache-2.0
++
++import math
++import time
++
++import numpy as np
++import pytest
++import torch
++
++from vllm.model_executor.layers.pooler.kev import KevPooler
++from vllm.pooling_params import PoolingParams
++from vllm.v1.engine import EngineCoreRequest
++from vllm.v1.pool.metadata import PoolingMetadata, PoolingStates
++from vllm.v1.serial_utils import MsgpackDecoder, MsgpackEncoder
++
++
++def metadata(sequence_lengths, option_indices, decision_indices):
++    params = [
++        PoolingParams(
++            task="plugin",
++            extra_kwargs={
++                "version": 1,
++                "option_end_indices": options,
++                "decision_index": decision,
++            },
++        )
++        for options, decision in zip(option_indices, decision_indices)
++    ]
++    lengths = torch.tensor(sequence_lengths, dtype=torch.long)
++    value = PoolingMetadata(
++        prompt_lens=lengths,
++        prompt_token_ids=None,
++        prompt_token_ids_cpu=None,
++        pooling_params=params,
++        pooling_states=[PoolingStates() for _ in params],
++    )
++    value.build_pooling_cursor(np.array(sequence_lengths), lengths, torch.device("cpu"))
++    return value
++
++
++def test_pointer_probabilities_match_fp32_reference_for_ragged_batch():
++    torch.manual_seed(1)
++    option_counts = [1, 2, 8, 255]
++    sequence_lengths = [count + 3 for count in option_counts]
++    option_indices = [list(range(1, count + 1)) for count in option_counts]
++    decision_indices = [length - 1 for length in sequence_lengths]
++    hidden_states = torch.randn(sum(sequence_lengths), 5, dtype=torch.bfloat16)
++    pooler = KevPooler(hidden_size=5, head_dim=3, temperature=2.3)
++
++    with torch.no_grad():
++        pooler.q.weight.copy_(torch.randn_like(pooler.q.weight))
++        pooler.q.bias.copy_(torch.randn_like(pooler.q.bias))
++        pooler.k.weight.copy_(torch.randn_like(pooler.k.weight))
++        pooler.k.bias.copy_(torch.randn_like(pooler.k.bias))
++
++    outputs = pooler(
++        hidden_states,
++        metadata(sequence_lengths, option_indices, decision_indices),
++    )
++    offsets = [0]
++    for length in sequence_lengths:
++        offsets.append(offsets[-1] + length)
++    for batch_index, output in enumerate(outputs):
++        start = offsets[batch_index]
++        decision = hidden_states[start + decision_indices[batch_index]].float()
++        options = hidden_states[
++            torch.tensor(option_indices[batch_index]) + start
++        ].float()
++        logits = pooler.k(options) @ pooler.q(decision) / math.sqrt(3) / 2.3
++        expected = logits.softmax(dim=-1)
++        torch.testing.assert_close(output, expected, atol=1e-5, rtol=1e-5)
++        assert output.shape == (option_counts[batch_index],)
++        assert torch.isfinite(output).all()
++        torch.testing.assert_close(output.sum(), torch.tensor(1.0))
++
++
++def test_pointer_head_stays_fp32_and_keeps_biases():
++    pooler = KevPooler(hidden_size=4, head_dim=2)
++
++    assert pooler.q.weight.dtype == torch.float32
++    assert pooler.k.weight.dtype == torch.float32
++    assert pooler.q.bias is not None
++    assert pooler.k.bias is not None
++
++
++def test_batch_reordering_preserves_ragged_question_results():
++    torch.manual_seed(7)
++    blocks = [torch.randn(5, 4), torch.randn(8, 4), torch.randn(4, 4)]
++    options = [[1, 2], [1, 3, 5, 6], [1]]
++    decisions = [4, 7, 3]
++    pooler = KevPooler(hidden_size=4, head_dim=3, temperature=1.7)
++
++    def run(order):
++        outputs = pooler(
++            torch.cat([blocks[index] for index in order]),
++            metadata(
++                [len(blocks[index]) for index in order],
++                [options[index] for index in order],
++                [decisions[index] for index in order],
++            ),
++        )
++        return {index: output for index, output in zip(order, outputs)}
++
++    original = run([0, 1, 2])
++    reordered = run([2, 0, 1])
++
++    for index in original:
++        torch.testing.assert_close(reordered[index], original[index])
++        torch.testing.assert_close(original[index].sum(), torch.tensor(1.0))
++
++
++@pytest.mark.parametrize(
++    ("extra_kwargs", "match"),
++    [
++        (None, "required"),
++        (
++            {
++                "version": 2,
++                "option_end_indices": [1],
++                "decision_index": 2,
++            },
++            "version",
++        ),
++        (
++            {
++                "version": 1,
++                "option_end_indices": [],
++                "decision_index": 2,
++            },
++            "non-empty",
++        ),
++        (
++            {
++                "version": 1,
++                "option_end_indices": [1],
++                "decision_index": 9,
++            },
++            "outside",
++        ),
++    ],
++)
++def test_invalid_metadata_is_rejected(extra_kwargs, match):
++    value = metadata([4], [[1]], [3])
++    value.pooling_params[0].extra_kwargs = extra_kwargs
++
++    with pytest.raises(ValueError, match=match):
++        KevPooler(hidden_size=3, head_dim=2)(torch.randn(4, 3), value)
++
++
++@pytest.mark.parametrize("temperature", [0.0, -1.0, float("nan")])
++def test_invalid_temperature_is_rejected(temperature):
++    with pytest.raises(ValueError, match="temperature"):
++        KevPooler(hidden_size=3, head_dim=2, temperature=temperature)
++
++
++def test_dummy_profiling_metadata_is_valid_for_any_nonempty_sequence():
++    pooler = KevPooler(hidden_size=3, head_dim=2)
++    params = pooler.get_dummy_pooling_params("plugin")
++    value = metadata([1, 3], [[0], [0, 0, 0]], [0, 2])
++    value.pooling_params = [params, params]
++
++    outputs = pooler(torch.randn(4, 3), value)
++    assert [output.tolist() for output in outputs] == [[1.0], [1.0]]
++
++
++def test_plugin_metadata_survives_engine_process_boundary_for_ragged_outputs(
++    monkeypatch,
++):
++    monkeypatch.setattr("vllm.v1.pool.metadata.PIN_MEMORY", False)
++    specs = [
++        ("parent-a/0", 5, [1, 2], 4),
++        ("parent-b/3", 7, [1, 3, 5], 6),
++    ]
++    requests = [
++        EngineCoreRequest(
++            request_id=request_id,
++            prompt_token_ids=list(range(sequence_length)),
++            mm_features=None,
++            sampling_params=None,
++            pooling_params=PoolingParams(
++                task="plugin",
++                extra_kwargs={
++                    "version": 1,
++                    "option_end_indices": option_indices,
++                    "decision_index": decision_index,
++                },
++            ),
++            arrival_time=time.time(),
++            lora_request=None,
++            cache_salt=None,
++            data_parallel_rank=None,
++        )
++        for request_id, sequence_length, option_indices, decision_index in specs
++    ]
++    encoder = MsgpackEncoder()
++    decoder = MsgpackDecoder(EngineCoreRequest)
++    decoded = [decoder.decode(encoder.encode(request)) for request in requests]
++
++    assert [request.request_id for request in decoded] == [
++        "parent-a/0",
++        "parent-b/3",
++    ]
++    assert [request.pooling_params.extra_kwargs for request in decoded] == [
++        {
++            "version": 1,
++            "option_end_indices": [1, 2],
++            "decision_index": 4,
++        },
++        {
++            "version": 1,
++            "option_end_indices": [1, 3, 5],
++            "decision_index": 6,
++        },
++    ]
++
++    value = metadata([5, 7], [[1, 2], [1, 3, 5]], [4, 6])
++    value.pooling_params = [request.pooling_params for request in decoded]
++    outputs = KevPooler(hidden_size=4, head_dim=3)(torch.randn(12, 4), value)
++    by_request = {
++        request.request_id: output for request, output in zip(decoded, outputs)
++    }
++
++    assert by_request["parent-a/0"].shape == (2,)
++    assert by_request["parent-b/3"].shape == (3,)
++    for output in by_request.values():
++        torch.testing.assert_close(output.sum(), torch.tensor(1.0))
+diff --git a/tests/models/test_kev_qwen3.py b/tests/models/test_kev_qwen3.py
+new file mode 100644
+index 000000000..1095493a6
+--- /dev/null
++++ b/tests/models/test_kev_qwen3.py
+@@ -0,0 +1,117 @@
++# SPDX-License-Identifier: Apache-2.0
++
++from types import SimpleNamespace
++
++import pytest
++import torch
++from torch import nn
++
++from vllm.model_executor.models import (
++    is_pooling_model,
++    is_text_generation_model,
++    kev_qwen3,
++)
++from vllm.model_executor.models.registry import ModelRegistry
++
++
++def test_kev_qwen3_is_registered_as_decision_only_pooling_model():
++    model_cls = ModelRegistry._try_load_model_cls("KevQwen3ForDecision")
++    assert model_cls is not None
++    assert is_pooling_model(model_cls)
++    assert not is_text_generation_model(model_cls)
++
++
++class Backbone(nn.Module):
++    def __init__(self, **kwargs):
++        super().__init__()
++        self.make_empty_intermediate_tensors = lambda: None
++
++    def embed_input_ids(self, input_ids):
++        return input_ids
++
++    def forward(self, input_ids, positions, intermediate_tensors, inputs_embeds):
++        return inputs_embeds if inputs_embeds is not None else input_ids
++
++
++def config(**head):
++    hf_config = SimpleNamespace(
++        hidden_size=8,
++        kev_backbone_dtype="bfloat16",
++        **head,
++    )
++    return SimpleNamespace(
++        model_config=SimpleNamespace(
++            hf_config=hf_config,
++            dtype=torch.bfloat16,
++            enforce_eager=True,
++        ),
++        parallel_config=SimpleNamespace(
++            tensor_parallel_size=1,
++            pipeline_parallel_size=1,
++        ),
++        cache_config=SimpleNamespace(enable_prefix_caching=False),
++        scheduler_config=SimpleNamespace(
++            enable_chunked_prefill=False,
++            max_num_batched_tokens=8192,
++        ),
++        quant_config=None,
++        lora_config=None,
++    )
++
++
++def test_kev_model_builds_backbone_and_fp32_head_without_generation(monkeypatch):
++    monkeypatch.setattr(kev_qwen3, "Qwen3Model", Backbone)
++    model = kev_qwen3.KevQwen3ForDecision(
++        vllm_config=config(kev_head_dim=3, kev_temperature=0.75)
++    )
++
++    assert not hasattr(model, "lm_head")
++    assert not hasattr(model, "compute_logits")
++    assert model.pooler.q.weight.dtype == torch.float32
++    assert model.pooler.k.bias.dtype == torch.float32
++    assert model.pooler.temperature == 0.75
++    assert model.pooler.get_supported_tasks() == {"plugin"}
++
++
++@pytest.mark.parametrize(
++    "head,match",
++    [
++        ({"kev_temperature": 1.0}, "head_dim"),
++        ({"kev_head_dim": 3}, "temperature"),
++        ({"kev_head_dim": 0, "kev_temperature": 1.0}, "head_dim"),
++        ({"kev_head_dim": 3, "kev_temperature": float("nan")}, "temperature"),
++    ],
++)
++def test_kev_model_rejects_missing_or_invalid_head_config(monkeypatch, head, match):
++    monkeypatch.setattr(kev_qwen3, "Qwen3Model", Backbone)
++    with pytest.raises(ValueError, match=match):
++        kev_qwen3.KevQwen3ForDecision(vllm_config=config(**head))
++
++
++@pytest.mark.parametrize(
++    "path,value,match",
++    [
++        (("model_config", "enforce_eager"), False, "eager"),
++        (("parallel_config", "tensor_parallel_size"), 2, "TP=1"),
++        (("cache_config", "enable_prefix_caching"), True, "prefix caching"),
++        (("scheduler_config", "enable_chunked_prefill"), True, "chunked"),
++        (("scheduler_config", "max_num_batched_tokens"), 8191, "complete"),
++        (("quant_config",), object(), "quantization"),
++        (("lora_config",), object(), "runtime LoRA"),
++    ],
++)
++def test_kev_runtime_profile_rejects_unsupported_modes(path, value, match):
++    vllm_config = config(kev_head_dim=3, kev_temperature=1.0)
++    target = vllm_config
++    for part in path[:-1]:
++        target = getattr(target, part)
++    setattr(target, path[-1], value)
++    with pytest.raises(ValueError, match=match):
++        kev_qwen3.validate_kev_runtime_config(vllm_config)
++
++
++def test_kev_runtime_profile_requires_explicit_matching_dtype():
++    vllm_config = config(kev_head_dim=3, kev_temperature=1.0)
++    vllm_config.model_config.hf_config.kev_backbone_dtype = "float16"
++    with pytest.raises(ValueError, match="explicit matching"):
++        kev_qwen3.validate_kev_runtime_config(vllm_config)
+diff --git a/vllm/entrypoints/openai/api_server.py b/vllm/entrypoints/openai/api_server.py
+index 59c7ee84c..d74e8f9aa 100644
+--- a/vllm/entrypoints/openai/api_server.py
++++ b/vllm/entrypoints/openai/api_server.py
+@@ -470,7 +470,9 @@ async def init_app_state(
+     if any(task in POOLING_TASKS for task in supported_tasks):
+         from vllm.entrypoints.pooling.factories import init_pooling_state
+ 
+-        init_pooling_state(engine_client, state, args, request_logger, supported_tasks)
++        await init_pooling_state(
++            engine_client, state, args, request_logger, supported_tasks
++        )
+ 
+     await _init_endpoint_plugins_state(engine_client, state, args)
+ 
+diff --git a/vllm/entrypoints/pooling/factories.py b/vllm/entrypoints/pooling/factories.py
+index dd3d873b3..e7e5de1ae 100644
+--- a/vllm/entrypoints/pooling/factories.py
++++ b/vllm/entrypoints/pooling/factories.py
+@@ -34,6 +34,14 @@ else:
+ 
+ logger = init_logger(__name__)
+ 
++SYSTEMONE_ARCHITECTURE = "KevQwen3ForDecision"
++
++
++def is_systemone_model(model_config: ModelConfig | None) -> bool:
++    return (
++        model_config is not None and model_config.architecture == SYSTEMONE_ARCHITECTURE
++    )
++
+ 
+ def init_pooling_io_processors(
+     supported_tasks: tuple[SupportedTask, ...],
+@@ -109,6 +117,11 @@ def register_pooling_api_routers(
+     if model_config is None:
+         return
+ 
++    if is_systemone_model(model_config):
++        from .systemone.api_router import router as systemone_router
++
++        app.include_router(systemone_router)
++
+     pooling_task = model_config.get_pooling_task(supported_tasks)
+ 
+     if pooling_task is not None:
+@@ -134,7 +147,7 @@ def register_pooling_api_routers(
+         app.include_router(score_router)
+ 
+ 
+-def init_pooling_state(
++async def init_pooling_state(
+     engine_client: "EngineClient",
+     state: "State",
+     args: "Namespace",
+@@ -209,6 +222,28 @@ def init_pooling_state(
+         if enable_scoring_api(supported_tasks, model_config)
+         else None
+     )
++    state.serving_systemone = None
++    if is_systemone_model(model_config):
++        from .systemone.artifact import validate_runtime_artifact
++        from .systemone.backend import EngineDecisionBackend
++        from .systemone.serving import SystemOneService
++
++        tokenizer = engine_client.renderer.get_tokenizer()
++        state.serving_systemone = SystemOneService(
++            EngineDecisionBackend(engine_client),
++            tokenizer,
++            state.openai_serving_models.model_name(),
++        )
++        try:
++            manifest = validate_runtime_artifact(model_config, tokenizer)
++            state.serving_systemone.set_artifact_manifest(manifest)
++            await state.serving_systemone.warmup()
++        except Exception as exc:
++            state.serving_systemone.set_ready(False, type(exc).__name__)
++            logger.exception(
++                "SystemOne artifact validation or warm-up failed; "
++                "endpoint remains unready"
++            )
+ 
+ 
+ def get_pooling_invocation_types(
+diff --git a/vllm/entrypoints/pooling/systemone/__init__.py b/vllm/entrypoints/pooling/systemone/__init__.py
+new file mode 100644
+index 000000000..2dc4ea598
+--- /dev/null
++++ b/vllm/entrypoints/pooling/systemone/__init__.py
+@@ -0,0 +1,31 @@
++# SPDX-License-Identifier: Apache-2.0
++
++from .protocol import SystemOneRequest
++from .renderer import (
++    Limits,
++    PreparedQuestion,
++    PreparedRequest,
++    prepare_questions,
++    prepare_request,
++)
++from .responses import (
++    answer_from_probabilities,
++    answers_from_probabilities,
++    serialized_output_tokens,
++)
++from .serving import ServiceResult, SystemOneError, SystemOneService
++
++__all__ = [
++    "Limits",
++    "PreparedQuestion",
++    "PreparedRequest",
++    "ServiceResult",
++    "SystemOneRequest",
++    "SystemOneError",
++    "SystemOneService",
++    "answer_from_probabilities",
++    "answers_from_probabilities",
++    "prepare_questions",
++    "prepare_request",
++    "serialized_output_tokens",
++]
+diff --git a/vllm/entrypoints/pooling/systemone/api_router.py b/vllm/entrypoints/pooling/systemone/api_router.py
+new file mode 100644
+index 000000000..6c262b053
+--- /dev/null
++++ b/vllm/entrypoints/pooling/systemone/api_router.py
+@@ -0,0 +1,73 @@
++# SPDX-License-Identifier: Apache-2.0
++
++import asyncio
++from contextlib import suppress
++from typing import Any
++
++from fastapi import APIRouter, Request
++from fastapi.responses import JSONResponse
++from pydantic import ValidationError
++
++from .protocol import SystemOneRequest
++from .serving import SystemOneError, SystemOneService
++
++router = APIRouter()
++
++
++def _validation_error(exc: Exception) -> JSONResponse:
++    error = SystemOneError(str(exc), "invalid_request_error", "invalid_request", 422)
++    return JSONResponse(content=error.as_dict(), status_code=error.status)
++
++
++async def _watch_disconnect(request: Request, event: asyncio.Event) -> None:
++    while not event.is_set():
++        if await request.is_disconnected():
++            event.set()
++            return
++        await asyncio.sleep(0.01)
++
++
++@router.post("/v1/systemone")
++async def create_systemone(raw_request: Request) -> JSONResponse:
++    handler: SystemOneService | None = getattr(
++        raw_request.app.state, "serving_systemone", None
++    )
++    if handler is None:
++        error = SystemOneError(
++            "the model does not support SystemOne",
++            "not_found_error",
++            "unsupported_endpoint",
++            404,
++        )
++        return JSONResponse(content=error.as_dict(), status_code=error.status)
++    try:
++        payload: Any = await raw_request.json()
++        request = SystemOneRequest.model_validate(payload)
++    except (ValueError, TypeError, ValidationError) as exc:
++        handler.record_error("invalid_request")
++        return _validation_error(exc)
++
++    disconnected = asyncio.Event()
++    watcher = asyncio.create_task(_watch_disconnect(raw_request, disconnected))
++    try:
++        result = await handler.decide(request, disconnected)
++        return JSONResponse(
++            content={
++                "model": result.model,
++                "answers": result.answers,
++                "usage": {
++                    "input_tokens": result.input_tokens,
++                    "output_tokens": result.output_tokens,
++                },
++                "latency_ms": result.latency_ms,
++            }
++        )
++    except SystemOneError as exc:
++        return JSONResponse(content=exc.as_dict(), status_code=exc.status)
++    finally:
++        watcher.cancel()
++        with suppress(asyncio.CancelledError):
++            await watcher
++
++
++__all__ = ["router"]
+diff --git a/vllm/entrypoints/pooling/systemone/artifact.py b/vllm/entrypoints/pooling/systemone/artifact.py
+new file mode 100644
+index 000000000..e9704a049
+--- /dev/null
++++ b/vllm/entrypoints/pooling/systemone/artifact.py
+@@ -0,0 +1,137 @@
++# SPDX-License-Identifier: Apache-2.0
++
++import hashlib
++import json
++import math
++import re
++from pathlib import Path
++from typing import TYPE_CHECKING, Any
++
++from .renderer import STRUCTURAL_TOKENS, Tokenizer
++
++if TYPE_CHECKING:
++    from vllm.config import ModelConfig
++
++_ARCHITECTURE = "KevQwen3ForDecision"
++_REVISION = re.compile(r"[0-9a-f]{40}")
++_SHA256 = re.compile(r"[0-9a-f]{64}")
++
++
++def _sha256(path: Path) -> str:
++    digest = hashlib.sha256()
++    with path.open("rb") as stream:
++        for block in iter(lambda: stream.read(1024 * 1024), b""):
++            digest.update(block)
++    return digest.hexdigest()
++
++
++def _file(root: Path, name: str) -> Path:
++    relative = Path(name)
++    if relative.is_absolute() or len(relative.parts) != 1 or ".." in relative.parts:
++        raise ValueError(f"invalid KEV artifact filename: {name}")
++    path = root / relative
++    if path.is_symlink() or not path.is_file():
++        raise ValueError(f"missing regular KEV artifact file: {name}")
++    return path
++
++
++def validate_runtime_artifact(
++    model_config: "ModelConfig", tokenizer: Tokenizer
++) -> dict[str, Any]:
++    """Validate an exported KEV artifact before enabling its endpoint."""
++    root = Path(model_config.model).resolve()
++    if not root.is_dir():
++        raise ValueError("KEV requires a local exported artifact directory")
++    manifest_path = _file(root, "kev_manifest.json")
++    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
++    if manifest.get("format_version") != 1:
++        raise ValueError("unsupported KEV artifact format")
++    if manifest.get("architecture") != _ARCHITECTURE:
++        raise ValueError("invalid KEV artifact architecture")
++    if manifest.get("option_isolation") is not False:
++        raise ValueError("option-isolation KEV artifacts are unsupported")
++    temperature = manifest.get("temperature")
++    if (
++        type(temperature) not in (int, float)
++        or not math.isfinite(temperature)
++        or temperature <= 0
++    ):
++        raise ValueError("invalid KEV artifact temperature")
++
++    sources = manifest.get("sources")
++    if not isinstance(sources, dict):
++        raise ValueError("KEV artifact source provenance is missing")  # noqa: TRY004
++    for field in ("checkpoint_revision", "base_revision", "reference_revision"):
++        revision = sources.get(field)
++        if not isinstance(revision, str) or _REVISION.fullmatch(revision) is None:
++            raise ValueError(f"KEV artifact {field} is not immutable")
++    source_checksums = sources.get("files_sha256")
++    if (
++        not isinstance(source_checksums, dict)
++        or set(source_checksums)
++        != {"adapter_config.json", "adapter_model.safetensors", "head.pt"}
++        or any(
++            not isinstance(value, str) or _SHA256.fullmatch(value) is None
++            for value in source_checksums.values()
++        )
++    ):
++        raise ValueError("KEV artifact source checksums are invalid")
++
++    checksums = manifest.get("files_sha256")
++    if not isinstance(checksums, dict) or not checksums:
++        raise ValueError("KEV artifact checksum inventory is missing")
++    required = {
++        "config.json",
++        "model.safetensors.index.json",
++        "tokenizer.json",
++        "tokenizer_config.json",
++    }
++    if not required.issubset(checksums):
++        raise ValueError("KEV artifact checksum inventory is incomplete")
++    actual_files = {
++        path.name
++        for path in root.iterdir()
++        if path.is_file() and path.name != "kev_manifest.json"
++    }
++    if set(checksums) != actual_files:
++        raise ValueError("KEV artifact checksum inventory does not match its files")
++    for name, expected in checksums.items():
++        if not isinstance(expected, str) or _SHA256.fullmatch(expected) is None:
++            raise ValueError(f"invalid KEV artifact checksum: {name}")
++        if _sha256(_file(root, name)) != expected:
++            raise ValueError(f"KEV artifact checksum mismatch: {name}")
++
++    index = json.loads((root / "model.safetensors.index.json").read_text("utf-8"))
++    weight_map = index.get("weight_map")
++    head_names = {
++        "pooler.q.weight",
++        "pooler.q.bias",
++        "pooler.k.weight",
++        "pooler.k.bias",
++    }
++    if not isinstance(weight_map, dict) or not head_names.issubset(weight_map):
++        raise ValueError("KEV artifact pointer head index is incomplete")
++    if not set(weight_map.values()).issubset(checksums):
++        raise ValueError("KEV artifact index references an unverified weight file")
++
++    hf_config = model_config.hf_config
++    if model_config.architecture != _ARCHITECTURE:
++        raise ValueError("loaded model architecture does not match KEV artifact")
++    config_fields = {
++        "kev_head_dim": "head_dim",
++        "kev_temperature": "temperature",
++        "kev_backbone_dtype": "backbone_dtype",
++    }
++    for config_field, manifest_field in config_fields.items():
++        if getattr(hf_config, config_field, None) != manifest.get(manifest_field):
++            raise ValueError(f"loaded model config mismatch: {config_field}")
++
++    actual_token_ids = {
++        token: tokenizer.convert_tokens_to_ids(token) for token in STRUCTURAL_TOKENS
++    }
++    if actual_token_ids != manifest.get("structural_token_ids"):
++        raise ValueError("loaded tokenizer does not match KEV artifact")
++    return manifest
++
++
++__all__ = ["validate_runtime_artifact"]
+diff --git a/vllm/entrypoints/pooling/systemone/backend.py b/vllm/entrypoints/pooling/systemone/backend.py
+new file mode 100644
+index 000000000..955dcc010
+--- /dev/null
++++ b/vllm/entrypoints/pooling/systemone/backend.py
+@@ -0,0 +1,50 @@
++# SPDX-License-Identifier: Apache-2.0
++
++from __future__ import annotations
++
++from collections.abc import Sequence
++from typing import TYPE_CHECKING, Any
++
++from vllm.pooling_params import PoolingParams
++
++from .renderer import PreparedQuestion
++
++if TYPE_CHECKING:
++    from vllm.engine.protocol import EngineClient
++
++
++class EngineDecisionBackend:
++    """Adapt vLLM's pooling engine to a single KEV question branch."""
++
++    def __init__(self, engine_client: EngineClient) -> None:
++        self.engine_client = engine_client
++
++    async def infer(
++        self, request_id: str, question: PreparedQuestion
++    ) -> Sequence[float]:
++        params = PoolingParams(task="plugin", extra_kwargs=question.metadata())
++        final_output: Any | None = None
++        async for output in self.engine_client.encode(
++            {"prompt_token_ids": list(question.token_ids)},
++            params,
++            request_id,
++        ):
++            final_output = output
++        if final_output is None:
++            raise RuntimeError("pooling engine returned no output")
++        data = final_output.outputs.data
++        if hasattr(data, "detach"):
++            data = data.detach()
++        if hasattr(data, "cpu"):
++            data = data.cpu()
++        if hasattr(data, "tolist"):
++            data = data.tolist()
++        if not isinstance(data, (list, tuple)):
++            raise TypeError("KEV pooler output must be a probability sequence")
++        return [float(value) for value in data]
++
++    async def abort(self, request_ids: Sequence[str]) -> None:
++        await self.engine_client.abort(request_ids)
++
++
++__all__ = ["EngineDecisionBackend"]
+diff --git a/vllm/entrypoints/pooling/systemone/metrics.py b/vllm/entrypoints/pooling/systemone/metrics.py
+new file mode 100644
+index 000000000..2ff9c2805
+--- /dev/null
++++ b/vllm/entrypoints/pooling/systemone/metrics.py
+@@ -0,0 +1,85 @@
++# SPDX-License-Identifier: Apache-2.0
++
++from prometheus_client import Counter, Gauge, Histogram
++from typing_extensions import Protocol
++
++_input_tokens = Counter(
++    "vllm:systemone_input_tokens_total",
++    "SystemOne input tokens by logical or actual accounting.",
++    labelnames=("model", "kind"),
++)
++_success = Counter(
++    "vllm:systemone_success_total",
++    "Successful SystemOne requests or questions.",
++    labelnames=("model", "kind"),
++)
++_errors = Counter(
++    "vllm:systemone_errors_total",
++    "SystemOne errors by stable API code.",
++    labelnames=("model", "code"),
++)
++_in_flight = Gauge(
++    "vllm:systemone_in_flight",
++    "SystemOne requests or inference branches currently in flight.",
++    labelnames=("model", "kind"),
++    multiprocess_mode="livesum",
++)
++_queue_duration = Histogram(
++    "vllm:systemone_queue_duration_seconds",
++    "Time a SystemOne inference branch waits for a worker.",
++    labelnames=("model",),
++)
++_request_duration = Histogram(
++    "vllm:systemone_request_duration_seconds",
++    "End-to-end SystemOne request duration.",
++    labelnames=("model",),
++)
++
++
++class DecisionMetrics(Protocol):
++    def request_started(self) -> None: ...
++
++    def request_finished(self, duration_seconds: float) -> None: ...
++
++    def branch_started(self, queue_seconds: float) -> None: ...
++
++    def branch_finished(self) -> None: ...
++
++    def request_succeeded(
++        self, logical_tokens: int, actual_tokens: int, questions: int
++    ) -> None: ...
++
++    def request_failed(self, code: str) -> None: ...
++
++
++class SystemOneMetrics:
++    def __init__(self, model_id: str) -> None:
++        self.model_id = model_id
++
++    def request_started(self) -> None:
++        _in_flight.labels(self.model_id, "request").inc()
++
++    def request_finished(self, duration_seconds: float) -> None:
++        _in_flight.labels(self.model_id, "request").dec()
++        _request_duration.labels(self.model_id).observe(duration_seconds)
++
++    def branch_started(self, queue_seconds: float) -> None:
++        _queue_duration.labels(self.model_id).observe(queue_seconds)
++        _in_flight.labels(self.model_id, "branch").inc()
++
++    def branch_finished(self) -> None:
++        _in_flight.labels(self.model_id, "branch").dec()
++
++    def request_succeeded(
++        self, logical_tokens: int, actual_tokens: int, questions: int
++    ) -> None:
++        _input_tokens.labels(self.model_id, "logical").inc(logical_tokens)
++        _input_tokens.labels(self.model_id, "actual").inc(actual_tokens)
++        _success.labels(self.model_id, "request").inc()
++        _success.labels(self.model_id, "question").inc(questions)
++
++    def request_failed(self, code: str) -> None:
++        _errors.labels(self.model_id, code).inc()
++
++
++__all__ = ["DecisionMetrics", "SystemOneMetrics"]
+diff --git a/vllm/entrypoints/pooling/systemone/protocol.py b/vllm/entrypoints/pooling/systemone/protocol.py
+new file mode 100644
+index 000000000..6a3a67aa7
+--- /dev/null
++++ b/vllm/entrypoints/pooling/systemone/protocol.py
+@@ -0,0 +1,103 @@
++# SPDX-License-Identifier: Apache-2.0
++
++import math
++from typing import Annotated, Any, Literal, TypeAlias
++
++from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
++
++JSONContent: TypeAlias = str | dict[str, Any] | list[Any] | int | float | bool | None
++MAX_OPTIONS = 255
++
++
++def _validate_json_content(value: Any, path: str = "value") -> Any:
++    if value is None or isinstance(value, (str, bool, int)):
++        return value
++    if isinstance(value, float):
++        if not math.isfinite(value):
++            raise ValueError(f"{path} must contain only finite numbers")
++        return value
++    if isinstance(value, list):
++        for index, item in enumerate(value):
++            _validate_json_content(item, f"{path}[{index}]")
++        return value
++    if isinstance(value, dict):
++        for key, item in value.items():
++            if not isinstance(key, str):
++                raise ValueError(f"{path} object keys must be strings")
++            _validate_json_content(item, f"{path}.{key}")
++        return value
++    raise ValueError(f"{path} must be JSON-compatible")
++
++
++class SystemOneModel(BaseModel):
++    model_config = ConfigDict(extra="forbid", strict=True)
++
++
++class QuestionBase(SystemOneModel):
++    instructions: JSONContent
++
++    @field_validator("instructions", mode="before")
++    @classmethod
++    def validate_instructions(cls, value: Any) -> Any:
++        return _validate_json_content(value, "instructions")
++
++
++class NoulQuestion(QuestionBase):
++    type: Literal["noul"]
++    criteria: dict[str, JSONContent] | None = None
++
++    @field_validator("criteria", mode="before")
++    @classmethod
++    def validate_criteria(cls, value: Any) -> Any:
++        if value is None:
++            return None
++        _validate_json_content(value, "criteria")
++        unknown = set(value) - {"false", "true"}
++        if unknown:
++            raise ValueError("noul criteria may contain only false and true")
++        return value
++
++
++class ChoiceQuestion(QuestionBase):
++    type: Literal["choice"]
++    criteria: dict[str, JSONContent] = Field(min_length=1, max_length=MAX_OPTIONS)
++
++    @field_validator("criteria", mode="before")
++    @classmethod
++    def validate_criteria(cls, value: Any) -> Any:
++        return _validate_json_content(value, "criteria")
++
++
++class ScoreQuestion(QuestionBase):
++    type: Literal["score"]
++    criteria: list[JSONContent] = Field(min_length=2, max_length=MAX_OPTIONS)
++
++    @field_validator("criteria", mode="before")
++    @classmethod
++    def validate_criteria(cls, value: Any) -> Any:
++        return _validate_json_content(value, "criteria")
++
++
++Question = Annotated[
++    NoulQuestion | ChoiceQuestion | ScoreQuestion,
++    Field(discriminator="type"),
++]
++
++
++class SystemOneRequest(SystemOneModel):
++    state: JSONContent
++    model: str = "kev-latest"
++    questions: dict[str, Question] = Field(min_length=1)
++
++    @field_validator("state", mode="before")
++    @classmethod
++    def validate_state(cls, value: Any) -> Any:
++        return _validate_json_content(value, "state")
++
++    @model_validator(mode="after")
++    def validate_names(self) -> "SystemOneRequest":
++        if not self.model:
++            raise ValueError("model must not be empty")
++        if any(not question_id for question_id in self.questions):
++            raise ValueError("question IDs must not be empty")
++        return self
+diff --git a/vllm/entrypoints/pooling/systemone/renderer.py b/vllm/entrypoints/pooling/systemone/renderer.py
+new file mode 100644
+index 000000000..2b7781b4f
+--- /dev/null
++++ b/vllm/entrypoints/pooling/systemone/renderer.py
+@@ -0,0 +1,213 @@
++# SPDX-License-Identifier: Apache-2.0
++
++import re
++from collections.abc import Sequence
++from dataclasses import dataclass
++from typing import Any, Protocol
++
++from .protocol import JSONContent, Question, SystemOneRequest
++
++STRUCTURAL_TOKENS = (
++    "<|fim_prefix|>",
++    "<|fim_middle|>",
++    "<|box_start|>",
++    "<|box_end|>",
++    "<|fim_suffix|>",
++)
++_CONTROL_TOKEN = re.compile(r"<\|([A-Za-z0-9_]+)\|>")
++
++
++class Tokenized(Protocol):
++    input_ids: Sequence[int]
++
++
++class Tokenizer(Protocol):
++    def __call__(self, text: str, *, add_special_tokens: bool) -> Tokenized: ...
++
++    def convert_tokens_to_ids(self, token: str) -> int: ...
++
++
++@dataclass(frozen=True)
++class PreparedQuestion:
++    question_id: str
++    question_type: str
++    keys: tuple[str, ...]
++    token_ids: tuple[int, ...]
++    position_ids: tuple[int, ...]
++    option_end_indices: tuple[int, ...]
++    decision_index: int
++    legend: dict[str, str] | None = None
++
++    def metadata(self) -> dict[str, Any]:
++        return {
++            "version": 1,
++            "option_end_indices": list(self.option_end_indices),
++            "decision_index": self.decision_index,
++        }
++
++
++@dataclass(frozen=True)
++class Limits:
++    max_questions: int = 32
++    max_options: int = 255
++    max_state_tokens: int = 8192
++    max_branch_tokens: int = 8192
++    max_logical_tokens: int = 32768
++
++    def __post_init__(self) -> None:
++        if any(
++            value <= 0
++            for value in (
++                self.max_questions,
++                self.max_options,
++                self.max_state_tokens,
++                self.max_branch_tokens,
++                self.max_logical_tokens,
++            )
++        ):
++            raise ValueError("SystemOne limits must be positive")
++
++
++DEFAULT_LIMITS = Limits()
++
++
++@dataclass(frozen=True)
++class PreparedRequest:
++    questions: tuple[PreparedQuestion, ...]
++    state_tokens: int
++    logical_input_tokens: int
++    actual_input_tokens: int
++
++
++def render_json(value: JSONContent, indent: int = 0) -> str:
++    pad = "  " * indent
++    if value is None:
++        return ""
++    if isinstance(value, (str, int, float, bool)):
++        return str(value)
++    if isinstance(value, list):
++        return "\n".join(
++            f"{pad}- {render_json(item, indent + 1).lstrip()}" for item in value
++        )
++    return "\n".join(
++        f"{pad}{key}:\n{render_json(item, indent + 1)}"
++        if isinstance(item, (dict, list))
++        else f"{pad}{key}: {render_json(item)}"
++        for key, item in value.items()
++    )
++
++
++def option_text(name: str, description: JSONContent) -> str:
++    if description is None or description == "":
++        return name
++    return f"{name}: {render_json(description)}"
++
++
++def escape_control_tokens(text: str) -> str:
++    return _CONTROL_TOKEN.sub(r"<¦\1¦>", text)
++
++
++def user_token_ids(tokenizer: Tokenizer, text: str) -> list[int]:
++    encoded = tokenizer(escape_control_tokens(text), add_special_tokens=False)
++    return list(encoded.input_ids)
++
++
++def _question_options(question: Question) -> tuple[list[str], tuple[str, ...]]:
++    if question.type == "noul":
++        criteria = question.criteria or {}
++        options = [
++            option_text("no", criteria.get("false")),
++            option_text("yes", criteria.get("true")),
++        ]
++        return options, ("false", "true")
++    if question.type == "choice":
++        return (
++            [option_text(key, value) for key, value in question.criteria.items()],
++            tuple(question.criteria),
++        )
++    return [render_json(value) for value in question.criteria], tuple(
++        str(index) for index in range(len(question.criteria))
++    )
++
++
++def _structural_token_ids(tokenizer: Tokenizer) -> tuple[int, ...]:
++    token_ids = tuple(
++        tokenizer.convert_tokens_to_ids(token) for token in STRUCTURAL_TOKENS
++    )
++    if any(token_id < 0 for token_id in token_ids) or len(set(token_ids)) != len(
++        token_ids
++    ):
++        raise ValueError("tokenizer has invalid KEV structural token IDs")
++    return token_ids
++
++
++def prepare_questions(
++    request: SystemOneRequest,
++    tokenizer: Tokenizer,
++) -> list[PreparedQuestion]:
++    return list(prepare_request(request, tokenizer).questions)
++
++
++def prepare_request(
++    request: SystemOneRequest,
++    tokenizer: Tokenizer,
++    limits: Limits = DEFAULT_LIMITS,
++) -> PreparedRequest:
++    if len(request.questions) > limits.max_questions:
++        raise ValueError(f"request exceeds {limits.max_questions} questions")
++    state_id, question_id, option_id, option_end_id, decision_id = (
++        _structural_token_ids(tokenizer)
++    )
++    state_tokens = [state_id, *user_token_ids(tokenizer, render_json(request.state))]
++    if len(state_tokens) > limits.max_state_tokens:
++        raise ValueError(f"state exceeds {limits.max_state_tokens} tokens")
++    prepared = []
++    for external_id, question in request.questions.items():
++        options, keys = _question_options(question)
++        if len(options) > limits.max_options:
++            raise ValueError(
++                f"question {external_id!r} exceeds {limits.max_options} options"
++            )
++        token_ids = [
++            *state_tokens,
++            question_id,
++            *user_token_ids(tokenizer, render_json(question.instructions)),
++        ]
++        option_end_indices = []
++        for option in options:
++            token_ids.extend(
++                [option_id, *user_token_ids(tokenizer, option), option_end_id]
++            )
++            option_end_indices.append(len(token_ids) - 1)
++        token_ids.append(decision_id)
++        if len(token_ids) > limits.max_branch_tokens:
++            raise ValueError(
++                f"question {external_id!r} exceeds "
++                f"{limits.max_branch_tokens} branch tokens"
++            )
++        legend = dict(zip(keys, options)) if question.type == "score" else None
++        prepared.append(
++            PreparedQuestion(
++                question_id=external_id,
++                question_type=question.type,
++                keys=keys,
++                token_ids=tuple(token_ids),
++                position_ids=tuple(range(len(token_ids))),
++                option_end_indices=tuple(option_end_indices),
++                decision_index=len(token_ids) - 1,
++                legend=legend,
++            )
++        )
++    logical_input_tokens = len(state_tokens) + sum(
++        len(question.token_ids) - len(state_tokens) for question in prepared
++    )
++    if logical_input_tokens > limits.max_logical_tokens:
++        raise ValueError(
++            f"request exceeds {limits.max_logical_tokens} logical input tokens"
++        )
++    return PreparedRequest(
++        questions=tuple(prepared),
++        state_tokens=len(state_tokens),
++        logical_input_tokens=logical_input_tokens,
++        actual_input_tokens=sum(len(question.token_ids) for question in prepared),
++    )
+diff --git a/vllm/entrypoints/pooling/systemone/responses.py b/vllm/entrypoints/pooling/systemone/responses.py
+new file mode 100644
+index 000000000..98ebb8a92
+--- /dev/null
++++ b/vllm/entrypoints/pooling/systemone/responses.py
+@@ -0,0 +1,102 @@
++# SPDX-License-Identifier: Apache-2.0
++
++import json
++import math
++from collections.abc import Sequence
++from typing import Any
++
++from .renderer import PreparedQuestion
++
++PROBABILITY_SUM_TOLERANCE = 1e-6
++
++
++def _validate_probabilities(
++    prepared: PreparedQuestion, probabilities: Sequence[float]
++) -> list[float]:
++    values = [float(value) for value in probabilities]
++    if len(values) != len(prepared.keys):
++        raise ValueError("probability count does not match the question options")
++    if any(not math.isfinite(value) or not 0 <= value <= 1 for value in values):
++        raise ValueError("probabilities must be finite values in [0, 1]")
++    if abs(sum(values) - 1) > PROBABILITY_SUM_TOLERANCE:
++        raise ValueError("probabilities must sum to one")
++    return values
++
++
++def _choice_confidence(probabilities: list[float]) -> float:
++    option_count = len(probabilities)
++    if option_count == 1:
++        return 1.0
++    chance = 1 / option_count
++    return (max(probabilities) - chance) / (1 - chance)
++
++
++def _score_confidence(probabilities: list[float]) -> float:
++    mode = max(range(len(probabilities)), key=probabilities.__getitem__)
++    distance = sum(
++        probability * abs(index - mode)
++        for index, probability in enumerate(probabilities)
++    )
++    return 1 - distance / (len(probabilities) - 1)
++
++
++def _round(value: float) -> float:
++    return round(float(value), 2)
++
++
++def answer_from_probabilities(
++    prepared: PreparedQuestion,
++    probabilities: Sequence[float],
++) -> dict[str, Any]:
++    raw = _validate_probabilities(prepared, probabilities)
++    if prepared.question_type == "noul":
++        return {"type": "noul", "noul": _round(raw[1])}
++    if prepared.question_type == "choice":
++        winner = max(range(len(raw)), key=raw.__getitem__)
++        return {
++            "type": "choice",
++            "choice": prepared.keys[winner],
++            "confidence": _round(_choice_confidence(raw)),
++            "probabilities": {
++                key: _round(value) for key, value in zip(prepared.keys, raw)
++            },
++        }
++    if prepared.question_type == "score":
++        if prepared.legend is None:
++            raise ValueError("score question is missing its legend")
++        score = sum(index * probability for index, probability in enumerate(raw))
++        return {
++            "type": "score",
++            "score": _round(score),
++            "legend": prepared.legend,
++            "probabilities": {
++                key: _round(value) for key, value in zip(prepared.keys, raw)
++            },
++            "confidence": _round(_score_confidence(raw)),
++        }
++    raise ValueError(f"unsupported question type: {prepared.question_type}")
++
++
++def answers_from_probabilities(
++    prepared: Sequence[PreparedQuestion],
++    probabilities: Sequence[Sequence[float]],
++) -> dict[str, dict[str, Any]]:
++    if len(prepared) != len(probabilities):
++        raise ValueError("probability result count does not match the questions")
++    return {
++        question.question_id: answer_from_probabilities(question, values)
++        for question, values in zip(prepared, probabilities)
++    }
++
++
++def serialized_output_tokens(tokenizer: Any, answers: dict[str, Any]) -> int:
++    """Count tokens in the exact JSON representation returned by KEV."""
++    serialized = json.dumps(answers)
++    return len(tokenizer(serialized, add_special_tokens=False).input_ids)
++
++
++__all__ = [
++    "answer_from_probabilities",
++    "answers_from_probabilities",
++    "serialized_output_tokens",
++]
+diff --git a/vllm/entrypoints/pooling/systemone/serving.py b/vllm/entrypoints/pooling/systemone/serving.py
+new file mode 100644
+index 000000000..68be0aeca
+--- /dev/null
++++ b/vllm/entrypoints/pooling/systemone/serving.py
+@@ -0,0 +1,394 @@
++# SPDX-License-Identifier: Apache-2.0
++
++import asyncio
++import time
++import uuid
++from collections import deque
++from collections.abc import Sequence
++from contextlib import suppress
++from dataclasses import dataclass
++from typing import Any, Protocol
++
++from .metrics import DecisionMetrics, SystemOneMetrics
++from .protocol import SystemOneRequest
++from .renderer import (
++    DEFAULT_LIMITS,
++    Limits,
++    PreparedQuestion,
++    Tokenizer,
++    prepare_request,
++)
++from .responses import answers_from_probabilities, serialized_output_tokens
++
++
++class DecisionBackend(Protocol):
++    async def infer(
++        self, request_id: str, question: PreparedQuestion
++    ) -> Sequence[float]: ...
++
++    async def abort(self, request_ids: Sequence[str]) -> None: ...
++
++
++class SystemOneError(Exception):
++    def __init__(self, message: str, error_type: str, code: str, status: int):
++        super().__init__(message)
++        self.message = message
++        self.error_type = error_type
++        self.code = code
++        self.status = status
++
++    def as_dict(self) -> dict:
++        return {
++            "error": {
++                "message": self.message,
++                "type": self.error_type,
++                "code": self.code,
++                "param": None,
++            }
++        }
++
++
++@dataclass(frozen=True)
++class ServiceResult:
++    model: str
++    answers: dict
++    input_tokens: int
++    actual_input_tokens: int
++    output_tokens: int
++    latency_ms: float
++
++
++@dataclass
++class _Job:
++    parent_id: str
++    request_id: str
++    question: PreparedQuestion
++    future: asyncio.Future
++    enqueued_at: float
++
++
++class _FairScheduler:
++    def __init__(
++        self,
++        backend: DecisionBackend,
++        global_limit: int,
++        per_parent_limit: int,
++        metrics: DecisionMetrics,
++    ) -> None:
++        self.backend = backend
++        self.global_limit = global_limit
++        self.per_parent_limit = per_parent_limit
++        self.metrics = metrics
++        self._condition = asyncio.Condition()
++        self._queues: dict[str, deque[_Job]] = {}
++        self._order: deque[str] = deque()
++        self._active: dict[str, int] = {}
++        self._workers: list[asyncio.Task] = []
++        self._closed = False
++
++    async def submit(
++        self,
++        parent_id: str,
++        questions: Sequence[PreparedQuestion],
++    ) -> tuple[list[str], list[asyncio.Future]]:
++        self._ensure_workers()
++        loop = asyncio.get_running_loop()
++        jobs = [
++            _Job(
++                parent_id=parent_id,
++                request_id=f"{parent_id}/{index}",
++                question=question,
++                future=loop.create_future(),
++                enqueued_at=time.monotonic(),
++            )
++            for index, question in enumerate(questions)
++        ]
++        async with self._condition:
++            self._queues[parent_id] = deque(jobs)
++            self._active[parent_id] = 0
++            self._order.append(parent_id)
++            self._condition.notify_all()
++        return [job.request_id for job in jobs], [job.future for job in jobs]
++
++    def _ensure_workers(self) -> None:
++        if not self._workers:
++            self._workers = [
++                asyncio.create_task(self._worker()) for _ in range(self.global_limit)
++            ]
++
++    async def cancel_parent(self, parent_id: str) -> None:
++        async with self._condition:
++            queued = self._queues.pop(parent_id, deque())
++            self._remove_from_order(parent_id)
++            for job in queued:
++                if not job.future.done():
++                    job.future.cancel()
++            self._condition.notify_all()
++
++    async def finish_parent(self, parent_id: str) -> None:
++        async with self._condition:
++            while self._active.get(parent_id, 0):
++                await self._condition.wait()
++            self._queues.pop(parent_id, None)
++            self._active.pop(parent_id, None)
++            self._remove_from_order(parent_id)
++
++    async def _next_job(self) -> _Job | None:
++        async with self._condition:
++            while True:
++                if self._closed:
++                    return None
++                for _ in range(len(self._order)):
++                    parent_id = self._order[0]
++                    self._order.rotate(-1)
++                    queue = self._queues[parent_id]
++                    if self._active[parent_id] >= self.per_parent_limit:
++                        continue
++                    job = queue.popleft()
++                    self._active[parent_id] += 1
++                    if not queue:
++                        self._remove_from_order(parent_id)
++                    return job
++                await self._condition.wait()
++
++    async def _worker(self) -> None:
++        while (job := await self._next_job()) is not None:
++            self.metrics.branch_started(time.monotonic() - job.enqueued_at)
++            try:
++                result = await self.backend.infer(job.request_id, job.question)
++                if not job.future.done():
++                    job.future.set_result(result)
++            except BaseException as exc:
++                if not job.future.done():
++                    job.future.set_exception(exc)
++            finally:
++                self.metrics.branch_finished()
++                async with self._condition:
++                    self._active[job.parent_id] -= 1
++                    if (
++                        self._queues.get(job.parent_id)
++                        and job.parent_id not in self._order
++                    ):
++                        self._order.append(job.parent_id)
++                    self._condition.notify_all()
++
++    def _remove_from_order(self, parent_id: str) -> None:
++        with suppress(ValueError):
++            self._order.remove(parent_id)
++
++    async def close(self) -> None:
++        async with self._condition:
++            self._closed = True
++            self._condition.notify_all()
++        await asyncio.gather(*self._workers, return_exceptions=True)
++
++
++class SystemOneService:
++    def __init__(
++        self,
++        backend: DecisionBackend,
++        tokenizer: Tokenizer,
++        model_id: str,
++        *,
++        aliases: Sequence[str] = ("kev-latest",),
++        limits: Limits = DEFAULT_LIMITS,
++        max_parents: int = 32,
++        global_children: int = 16,
++        per_parent_children: int = 4,
++        deadline_seconds: float = 30.0,
++        metrics: DecisionMetrics | None = None,
++    ) -> None:
++        if not model_id:
++            raise ValueError("model_id must not be empty")
++        if not 0 < per_parent_children <= global_children:
++            raise ValueError("per-parent children must not exceed global children")
++        if max_parents <= 0 or deadline_seconds <= 0:
++            raise ValueError("capacity and deadline must be positive")
++        self.backend = backend
++        self.tokenizer = tokenizer
++        self.model_id = model_id
++        self.aliases = frozenset(aliases)
++        self.limits = limits
++        self.max_parents = max_parents
++        self.deadline_seconds = deadline_seconds
++        self.metrics = metrics or SystemOneMetrics(model_id)
++        self.ready = False
++        self.readiness_error: str | None = "not_initialized"
++        self.artifact_manifest: dict[str, Any] | None = None
++        self._parents = 0
++        self._parents_lock = asyncio.Lock()
++        self._scheduler = _FairScheduler(
++            backend, global_children, per_parent_children, self.metrics
++        )
++
++    def set_ready(self, ready: bool, error: str | None = None) -> None:
++        self.ready = ready
++        self.readiness_error = None if ready else error
++
++    def set_artifact_manifest(self, manifest: dict[str, Any]) -> None:
++        self.artifact_manifest = manifest
++
++    def record_error(self, code: str) -> None:
++        self.metrics.request_failed(code)
++
++    async def warmup(self) -> None:
++        """Run one valid decision through the loaded model before readiness."""
++        request = SystemOneRequest.model_validate(
++            {
++                "model": self.model_id,
++                "state": None,
++                "questions": {
++                    "warmup": {
++                        "type": "noul",
++                        "instructions": "warm up",
++                    }
++                },
++            }
++        )
++        prepared = prepare_request(request, self.tokenizer, self.limits).questions[0]
++        request_id = f"systemone-warmup-{uuid.uuid4().hex}/0"
++        self.set_ready(False, "warmup_in_progress")
++        try:
++            probabilities = await self.backend.infer(request_id, prepared)
++            answers_from_probabilities((prepared,), (probabilities,))
++        except BaseException as exc:
++            self.set_ready(False, type(exc).__name__)
++            await self.backend.abort((request_id,))
++            raise
++        self.set_ready(True)
++
++    async def decide(
++        self,
++        request: SystemOneRequest,
++        disconnect_event: asyncio.Event | None = None,
++    ) -> ServiceResult:
++        started = time.monotonic()
++        self.metrics.request_started()
++        try:
++            result = await self._decide(request, disconnect_event, started)
++        except SystemOneError as exc:
++            self.metrics.request_failed(exc.code)
++            raise
++        except asyncio.CancelledError:
++            self.metrics.request_failed("request_cancelled")
++            raise
++        else:
++            self.metrics.request_succeeded(
++                result.input_tokens,
++                result.actual_input_tokens,
++                len(result.answers),
++            )
++            return result
++        finally:
++            self.metrics.request_finished(time.monotonic() - started)
++
++    async def _decide(
++        self,
++        request: SystemOneRequest,
++        disconnect_event: asyncio.Event | None,
++        started: float,
++    ) -> ServiceResult:
++        if request.model != self.model_id and request.model not in self.aliases:
++            raise SystemOneError(
++                "unknown model", "not_found_error", "model_not_found", 404
++            )
++        if not self.ready:
++            raise SystemOneError(
++                "model is not ready", "service_unavailable", "model_not_ready", 503
++            )
++        try:
++            prepared = prepare_request(request, self.tokenizer, self.limits)
++        except ValueError as exc:
++            raise SystemOneError(
++                str(exc), "invalid_request_error", "invalid_request", 422
++            ) from exc
++        await self._admit_parent()
++        parent_id = f"systemone-{uuid.uuid4().hex}"
++        request_ids: list[str] = []
++        succeeded = False
++        try:
++            request_ids, futures = await self._scheduler.submit(
++                parent_id, prepared.questions
++            )
++            probabilities = await self._wait_for_results(futures, disconnect_event)
++            answers = answers_from_probabilities(prepared.questions, probabilities)
++            succeeded = True
++            return ServiceResult(
++                model=self.model_id,
++                answers=answers,
++                input_tokens=prepared.logical_input_tokens,
++                actual_input_tokens=prepared.actual_input_tokens,
++                output_tokens=serialized_output_tokens(self.tokenizer, answers),
++                latency_ms=(time.monotonic() - started) * 1000,
++            )
++        except TimeoutError as exc:
++            raise SystemOneError(
++                "request deadline exceeded", "timeout_error", "deadline_exceeded", 504
++            ) from exc
++        except asyncio.CancelledError:
++            raise
++        except SystemOneError:
++            raise
++        except Exception as exc:
++            raise SystemOneError(
++                "decision inference failed",
++                "server_error",
++                "inference_failed",
++                500,
++            ) from exc
++        finally:
++            if not succeeded:
++                await self._scheduler.cancel_parent(parent_id)
++                if request_ids:
++                    await self.backend.abort(request_ids)
++            await self._scheduler.finish_parent(parent_id)
++            await self._release_parent()
++
++    async def _wait_for_results(
++        self,
++        futures: Sequence[asyncio.Future],
++        disconnect_event: asyncio.Event | None,
++    ) -> list[Sequence[float]]:
++        async with asyncio.timeout(self.deadline_seconds):
++            results = asyncio.gather(*futures)
++            if disconnect_event is None:
++                return await results
++            disconnected = asyncio.create_task(disconnect_event.wait())
++            done, _ = await asyncio.wait(
++                (results, disconnected), return_when=asyncio.FIRST_COMPLETED
++            )
++            if disconnected in done and disconnect_event.is_set():
++                results.cancel()
++                with suppress(asyncio.CancelledError):
++                    await results
++                raise SystemOneError(
++                    "client disconnected",
++                    "cancelled_error",
++                    "client_disconnected",
++                    499,
++                )
++            disconnected.cancel()
++            with suppress(asyncio.CancelledError):
++                await disconnected
++            return await results
++
++    async def _admit_parent(self) -> None:
++        async with self._parents_lock:
++            if self._parents >= self.max_parents:
++                raise SystemOneError(
++                    "request capacity reached",
++                    "rate_limit_error",
++                    "too_many_requests",
++                    429,
++                )
++            self._parents += 1
++
++    async def _release_parent(self) -> None:
++        async with self._parents_lock:
++            self._parents -= 1
++
++    async def close(self) -> None:
++        await self._scheduler.close()
++
++
++__all__ = ["DecisionBackend", "ServiceResult", "SystemOneError", "SystemOneService"]
+diff --git a/vllm/model_executor/layers/pooler/__init__.py b/vllm/model_executor/layers/pooler/__init__.py
+index 2be361338..526f70142 100644
+--- a/vllm/model_executor/layers/pooler/__init__.py
++++ b/vllm/model_executor/layers/pooler/__init__.py
+@@ -2,4 +2,5 @@
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ from .abstract import *
+ from .common import *
++from .kev import *
+ from .special import *
+diff --git a/vllm/model_executor/layers/pooler/abstract.py b/vllm/model_executor/layers/pooler/abstract.py
+index 82abef4f6..99149da1a 100644
+--- a/vllm/model_executor/layers/pooler/abstract.py
++++ b/vllm/model_executor/layers/pooler/abstract.py
+@@ -6,6 +6,7 @@ from collections.abc import Set
+ import torch
+ import torch.nn as nn
+ 
++from vllm.pooling_params import PoolingParams
+ from vllm.tasks import PoolingTask
+ from vllm.v1.outputs import PoolerOutput
+ from vllm.v1.pool.metadata import PoolingMetadata
+@@ -27,6 +28,12 @@ class Pooler(nn.Module, ABC):
+         """
+         return PoolingParamsUpdate()
+ 
++    def get_dummy_pooling_params(self, task: PoolingTask) -> PoolingParams:
++        """Build valid task parameters for profiling and memory warm-up."""
++        params = PoolingParams(task=task)
++        self.get_pooling_updates(task).apply(params)
++        return params
++
+     @abstractmethod
+     def forward(
+         self,
+diff --git a/vllm/model_executor/layers/pooler/kev.py b/vllm/model_executor/layers/pooler/kev.py
+new file mode 100644
+index 000000000..e1d80bf4f
+--- /dev/null
++++ b/vllm/model_executor/layers/pooler/kev.py
+@@ -0,0 +1,124 @@
++# SPDX-License-Identifier: Apache-2.0
++
++import math
++from collections.abc import Set
++from typing import Any
++
++import torch
++import torch.nn as nn
++
++from vllm.pooling_params import PoolingParams
++from vllm.tasks import PoolingTask
++from vllm.v1.outputs import PoolerOutput
++from vllm.v1.pool.metadata import PoolingMetadata
++
++from .abstract import Pooler
++
++METADATA_VERSION = 1
++
++
++def _read_metadata(value: dict[str, Any] | None, sequence_length: int):
++    if value is None:
++        raise ValueError("KEV pooling metadata is required")
++    if value.get("version") != METADATA_VERSION:
++        raise ValueError("unsupported KEV pooling metadata version")
++    if set(value) != {"version", "option_end_indices", "decision_index"}:
++        raise ValueError("invalid KEV pooling metadata fields")
++
++    option_indices = value["option_end_indices"]
++    decision_index = value["decision_index"]
++    if (
++        not isinstance(option_indices, list)
++        or not option_indices
++        or any(type(index) is not int for index in option_indices)
++    ):
++        raise ValueError("option_end_indices must be a non-empty integer list")
++    if type(decision_index) is not int:
++        raise ValueError("decision_index must be an integer")
++    indices = [*option_indices, decision_index]
++    if any(index < 0 or index >= sequence_length for index in indices):
++        raise ValueError("KEV pooling index is outside the sequence")
++    if len(set(option_indices)) != len(option_indices):
++        raise ValueError("option_end_indices must be unique")
++    return option_indices, decision_index
++
++
++class KevPooler(Pooler):
++    def __init__(
++        self,
++        hidden_size: int,
++        head_dim: int,
++        temperature: float = 1.0,
++    ) -> None:
++        super().__init__()
++        if hidden_size <= 0 or head_dim <= 0:
++            raise ValueError("hidden_size and head_dim must be positive")
++        if not math.isfinite(temperature) or temperature <= 0:
++            raise ValueError("temperature must be finite and positive")
++        self.q = nn.Linear(hidden_size, head_dim, dtype=torch.float32)
++        self.k = nn.Linear(hidden_size, head_dim, dtype=torch.float32)
++        self.scale = 1 / math.sqrt(head_dim)
++        self.temperature = temperature
++
++    def get_supported_tasks(self) -> Set[PoolingTask]:
++        return {"plugin"}
++
++    def get_dummy_pooling_params(self, task: PoolingTask) -> PoolingParams:
++        if task != "plugin":
++            raise ValueError(f"unsupported KEV pooling task: {task}")
++        return PoolingParams(
++            task="plugin",
++            extra_kwargs={
++                "version": METADATA_VERSION,
++                "option_end_indices": [0],
++                "decision_index": 0,
++            },
++        )
++
++    def forward(
++        self,
++        hidden_states: torch.Tensor,
++        pooling_metadata: PoolingMetadata,
++    ) -> PoolerOutput:
++        if hidden_states.ndim != 2:
++            raise ValueError("KEV pooler expects flattened token hidden states")
++        cursor = pooling_metadata.get_pooling_cursor()
++        if len(pooling_metadata.pooling_params) != len(cursor.seq_lens_cpu):
++            raise ValueError("KEV metadata count does not match the batch")
++
++        option_indices = []
++        decision_indices = []
++        option_counts = []
++        for params, sequence_length in zip(
++            pooling_metadata.pooling_params, cursor.seq_lens_cpu
++        ):
++            options, decision = _read_metadata(
++                params.extra_kwargs, int(sequence_length)
++            )
++            option_indices.extend(options)
++            decision_indices.append(decision)
++            option_counts.append(len(options))
++
++        device = hidden_states.device
++        first_indices = cursor.first_token_indices_gpu.to(dtype=torch.long)
++        decision_indices_gpu = torch.tensor(
++            decision_indices, dtype=torch.long, device=device
++        )
++        option_indices_gpu = torch.tensor(
++            option_indices, dtype=torch.long, device=device
++        )
++        option_counts_gpu = torch.tensor(option_counts, dtype=torch.long, device=device)
++        global_decision_indices = first_indices + decision_indices_gpu
++        global_option_indices = (
++            first_indices.repeat_interleave(option_counts_gpu) + option_indices_gpu
++        )
++
++        decision_states = hidden_states[global_decision_indices].float()
++        option_states = hidden_states[global_option_indices].float()
++        queries = self.q(decision_states).repeat_interleave(option_counts_gpu, dim=0)
++        keys = self.k(option_states)
++        logits = (queries * keys).sum(dim=-1) * self.scale / self.temperature
++        return [part.softmax(dim=-1) for part in logits.split(option_counts)]
++
++
++__all__ = ["KevPooler"]
+diff --git a/vllm/model_executor/models/kev_qwen3.py b/vllm/model_executor/models/kev_qwen3.py
+new file mode 100644
+index 000000000..7c62e7863
+--- /dev/null
++++ b/vllm/model_executor/models/kev_qwen3.py
+@@ -0,0 +1,116 @@
++# SPDX-License-Identifier: Apache-2.0
++
++"""Decision-only Qwen3 model with the trained KEV pointer head."""
++
++import math
++from collections.abc import Iterable
++
++import torch
++from torch import nn
++
++from vllm.config import VllmConfig
++from vllm.model_executor.layers.pooler import KevPooler, Pooler
++from vllm.sequence import IntermediateTensors
++
++from .interfaces import SupportsPP
++from .qwen3 import Qwen3Model
++from .utils import AutoWeightsLoader, maybe_prefix
++
++SUPPORTED_BACKBONE_DTYPES = {
++    "bfloat16": torch.bfloat16,
++    "float16": torch.float16,
++}
++
++
++def validate_kev_runtime_config(vllm_config: VllmConfig) -> None:
++    """Reject execution modes outside the first validated KEV profile."""
++    model_config = vllm_config.model_config
++    dtype_name = getattr(model_config.hf_config, "kev_backbone_dtype", None)
++    expected_dtype = SUPPORTED_BACKBONE_DTYPES.get(dtype_name)
++    if expected_dtype is None or model_config.dtype != expected_dtype:
++        raise ValueError(
++            "KEV requires explicit matching kev_backbone_dtype "
++            "('bfloat16' or 'float16')"
++        )
++    parallel_config = vllm_config.parallel_config
++    if (
++        parallel_config.tensor_parallel_size != 1
++        or parallel_config.pipeline_parallel_size != 1
++    ):
++        raise ValueError("KEV first release requires single-device TP=1 and PP=1")
++    if not model_config.enforce_eager:
++        raise ValueError("KEV first release requires eager execution")
++    if vllm_config.cache_config.enable_prefix_caching:
++        raise ValueError("KEV first release does not support prefix caching")
++    if vllm_config.scheduler_config.enable_chunked_prefill:
++        raise ValueError("KEV first release does not support chunked prefill")
++    if vllm_config.quant_config is not None:
++        raise ValueError("KEV first release does not support quantization")
++    if vllm_config.lora_config is not None:
++        raise ValueError("KEV first release does not support runtime LoRA")
++    max_branch_tokens = getattr(model_config.hf_config, "kev_max_branch_tokens", 8192)
++    if vllm_config.scheduler_config.max_num_batched_tokens < max_branch_tokens:
++        raise ValueError(
++            "max_num_batched_tokens must cover the complete KEV branch limit"
++        )
++
++
++class KevQwen3ForDecision(nn.Module, SupportsPP):
++    """Qwen3 decoder backbone that only exposes KEV probability pooling."""
++
++    is_pooling_model = True
++    pooler: Pooler
++    hf_to_vllm_mapper = Qwen3Model.hf_to_vllm_mapper
++    packed_modules_mapping = {
++        "qkv_proj": ["q_proj", "k_proj", "v_proj"],
++        "gate_up_proj": ["gate_proj", "up_proj"],
++    }
++
++    def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
++        super().__init__()
++        validate_kev_runtime_config(vllm_config)
++        config = vllm_config.model_config.hf_config
++        head_dim = getattr(config, "kev_head_dim", None)
++        temperature = getattr(config, "kev_temperature", None)
++        if type(head_dim) is not int or head_dim <= 0:
++            raise ValueError("config.kev_head_dim must be a positive integer")
++        if (
++            not isinstance(temperature, int | float)
++            or isinstance(temperature, bool)
++            or not math.isfinite(temperature)
++            or temperature <= 0
++        ):
++            raise ValueError("config.kev_temperature must be finite and positive")
++
++        self.config = config
++        self.vllm_config = vllm_config
++        self.model = Qwen3Model(
++            vllm_config=vllm_config, prefix=maybe_prefix(prefix, "model")
++        )
++        self.pooler = KevPooler(
++            hidden_size=config.hidden_size,
++            head_dim=head_dim,
++            temperature=float(temperature),
++        )
++        self.make_empty_intermediate_tensors = (
++            self.model.make_empty_intermediate_tensors
++        )
++
++    def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
++        return self.model.embed_input_ids(input_ids)
++
++    def forward(
++        self,
++        input_ids: torch.Tensor | None,
++        positions: torch.Tensor,
++        intermediate_tensors: IntermediateTensors | None = None,
++        inputs_embeds: torch.Tensor | None = None,
++    ) -> torch.Tensor | IntermediateTensors:
++        return self.model(input_ids, positions, intermediate_tensors, inputs_embeds)
++
++    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
++        loader = AutoWeightsLoader(self, ignore_unexpected_prefixes=["lm_head."])
++        return loader.load_weights(weights)
++
++
++__all__ = ["KevQwen3ForDecision", "validate_kev_runtime_config"]
+diff --git a/vllm/model_executor/models/registry.py b/vllm/model_executor/models/registry.py
+index d28aac974..a5de29884 100644
+--- a/vllm/model_executor/models/registry.py
++++ b/vllm/model_executor/models/registry.py
+@@ -288,6 +288,10 @@ _REWARD_MODELS = {
+     "Qwen2ForProcessRewardModel": ("qwen2_rm", "Qwen2ForProcessRewardModel"),
+ }
+ 
++_PLUGIN_POOLING_MODELS = {
++    "KevQwen3ForDecision": ("kev_qwen3", "KevQwen3ForDecision"),
++}
++
+ _TOKEN_CLASSIFICATION_MODELS = {
+     "BertForTokenClassification": ("bert", "BertForTokenClassification"),
+     "ModernBertForTokenClassification": (
+@@ -707,6 +711,7 @@ _VLLM_MODELS = {
+     **_EMBEDDING_MODELS,
+     **_LATE_INTERACTION_MODELS,
+     **_REWARD_MODELS,
++    **_PLUGIN_POOLING_MODELS,
+     **_TOKEN_CLASSIFICATION_MODELS,
+     **_SEQUENCE_CLASSIFICATION_MODELS,
+     **_MULTIMODAL_MODELS,
+diff --git a/vllm/v1/worker/gpu_model_runner.py b/vllm/v1/worker/gpu_model_runner.py
+index f3f0afb13..69ce616a0 100644
+--- a/vllm/v1/worker/gpu_model_runner.py
++++ b/vllm/v1/worker/gpu_model_runner.py
+@@ -112,7 +112,6 @@ from vllm.multimodal.utils import (
+     set_mm_embedding_modality,
+ )
+ from vllm.platforms import current_platform
+-from vllm.pooling_params import PoolingParams
+ from vllm.sampling_params import SamplingType
+ from vllm.sequence import IntermediateTensors
+ from vllm.tasks import GenerationTask, PoolingTask, SupportedTask
+@@ -6296,10 +6295,8 @@ class GPUModelRunner(
+         )
+ 
+         model = cast(VllmModelForPooling, self.get_model())
+-        dummy_pooling_params = PoolingParams(task=task)
++        dummy_pooling_params = model.pooler.get_dummy_pooling_params(task)
+         dummy_pooling_params.verify(self.model_config)
+-        to_update = model.pooler.get_pooling_updates(task)
+-        to_update.apply(dummy_pooling_params)
+ 
+         dummy_metadata = PoolingMetadata(
+             prompt_lens=dummy_prompt_lens,
