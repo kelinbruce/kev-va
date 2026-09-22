@@ -1,0 +1,22 @@
+schema: spec-driven
+
+context: |
+  本仓库为 vLLM-Ascend；当前讨论基线为 vLLM / vLLM-Ascend 0.26 系列。
+  规范、设计和任务正文使用中文；保留 OpenSpec 要求的结构标题与 SHALL、WHEN、THEN。
+  当前目标是 Ascend 910 系列上的 KEV Qwen3 专用决策服务。
+  用户确认实际 CANN 为 9.0.1；官方 0.26 兼容表列出 9.1.0，组合仍需实测验证。
+  通用模型、Pooler 和 API 逻辑归属上游 vLLM；Ascend 仓库仅承担后端适配和验证。
+  遵循根目录 AGENTS.md；不得将未运行的 NPU 或真实权重测试描述为通过。
+
+rules:
+  proposal:
+    - 明确用户已确认约束、设计建议默认值和后续阶段边界。
+  specs:
+    - 每项需求必须包含 SHALL 或 MUST，并至少包含一个 WHEN/THEN 场景。
+    - 需求描述外部行为；内部类名、文件位置和执行步骤写入 design.md 或 tasks.md。
+  design:
+    - 记录固定代码与模型 revision、环境兼容性验证条件和数值验收口径。
+    - 区分首版实现、后续性能优化与尚未完成的硬件验证。
+  tasks:
+    - 使用编号复选框，按依赖排序，注明可观察的完成条件。
+    - 不得在仅完成规范时勾选实现、部署或真实权重验证任务。

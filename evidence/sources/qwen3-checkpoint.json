@@ -1,0 +1,177 @@
+{
+  "model_revision": "c4bfa11b0dc07691884f2d97f1c4c4c05c92e416",
+  "files": [
+    {
+      "path": ".gitattributes",
+      "size": 1570,
+      "blob_id": "52373fe24473b1aa44333d318f578ae6bf04b49b",
+      "lfs_sha256": null
+    },
+    {
+      "path": "README.md",
+      "size": 6855,
+      "blob_id": "6c7946c1b551bb97e3e0eb1633f1cb77c85be7ba",
+      "lfs_sha256": null
+    },
+    {
+      "path": "adapter_config.json",
+      "size": 1183,
+      "blob_id": "9138199c89fd6592ef870ece002471b70baa2bba",
+      "lfs_sha256": null
+    },
+    {
+      "path": "adapter_model.safetensors",
+      "size": 132184864,
+      "blob_id": "dc24bdf6de2e20dc8298d9dda7c791a442775634",
+      "lfs_sha256": "3fa10d8646f567e884ea47841b2f3d5f2d135b81a4447a8ea79a6fc94e9c6ae1"
+    },
+    {
+      "path": "added_tokens.json",
+      "size": 707,
+      "blob_id": "b54f9135e44c1e81047e8d05cb027af8bc039eed",
+      "lfs_sha256": null
+    },
+    {
+      "path": "head.pt",
+      "size": 5248127,
+      "blob_id": "988e686b94c6fc39707a91f0c9d585258d336a95",
+      "lfs_sha256": "dad87f7e60c8b3f1eec8bee83858a5429c6ab06dc96385a935bc88e6b468a45d"
+    },
+    {
+      "path": "merges.txt",
+      "size": 1671853,
+      "blob_id": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7",
+      "lfs_sha256": null
+    },
+    {
+      "path": "provenance.json",
+      "size": 2859,
+      "blob_id": "f17b4d0f92b61ba0fac500b436729e6b836e2ec3",
+      "lfs_sha256": null
+    },
+    {
+      "path": "result.json",
+      "size": 68293,
+      "blob_id": "59af51025e3aba6c1026068f2ccb7c0ec103b9eb",
+      "lfs_sha256": null
+    },
+    {
+      "path": "special_tokens_map.json",
+      "size": 616,
+      "blob_id": "17305b3603dfb19ccc0f658ec2cd2cd3adff4a58",
+      "lfs_sha256": null
+    },
+    {
+      "path": "tokenizer.json",
+      "size": 11422654,
+      "blob_id": "cd71f61a15a522601badb3dc960d800d9cb3766c",
+      "lfs_sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
+    },
+    {
+      "path": "tokenizer_config.json",
+      "size": 5407,
+      "blob_id": "eb89444dcfb54dacaadc35b8735b57b677b8662a",
+      "lfs_sha256": null
+    },
+    {
+      "path": "train.log",
+      "size": 19852,
+      "blob_id": "e9faff6c97ff4fa9a3e16788d9e1a4cfa6a757cb",
+      "lfs_sha256": null
+    },
+    {
+      "path": "training_config.json",
+      "size": 1044,
+      "blob_id": "15e03af26ae1dc11d48b2030bceb9caa0cde6354",
+      "lfs_sha256": null
+    },
+    {
+      "path": "training_metrics.json",
+      "size": 324,
+      "blob_id": "1579d13ac54a3ec6be9971be38f6d889cb42eff4",
+      "lfs_sha256": null
+    },
+    {
+      "path": "vocab.json",
+      "size": 2776833,
+      "blob_id": "4783fe10ac3adce15ac8f358ef5462739852c569",
+      "lfs_sha256": null
+    }
+  ],
+  "head.pt_sha256": "dad87f7e60c8b3f1eec8bee83858a5429c6ab06dc96385a935bc88e6b468a45d",
+  "head_metadata": {
+    "base": "Qwen/Qwen3-4B-Base",
+    "base_revision": "906bfd4b4dc7f14ee4320094d8b41684abff8539",
+    "head_dim": 256,
+    "option_isolation": false,
+    "special_embeddings": false
+  },
+  "head_shapes": {
+    "q.weight": [
+      256,
+      2560
+    ],
+    "q.bias": [
+      256
+    ],
+    "k.weight": [
+      256,
+      2560
+    ],
+    "k.bias": [
+      256
+    ]
+  },
+  "adapter_config.json_sha256": "46d9f1113377e8d0032f0548ae03b270153b2b7ba6dd26b63b244d29487e00e6",
+  "adapter_config": {
+    "alora_invocation_tokens": null,
+    "alpha_pattern": {},
+    "arrow_config": null,
+    "auto_mapping": null,
+    "base_model_name_or_path": "Qwen/Qwen3-4B-Base",
+    "bias": "none",
+    "corda_config": null,
+    "ensure_weight_tying": false,
+    "eva_config": null,
+    "exclude_modules": null,
+    "fan_in_fan_out": false,
+    "inference_mode": true,
+    "init_lora_weights": true,
+    "kasa_config": null,
+    "layer_replication": null,
+    "layers_pattern": null,
+    "layers_to_transform": null,
+    "loftq_config": {},
+    "lora_alpha": 32,
+    "lora_bias": false,
+    "lora_dropout": 0.05,
+    "lora_ga_config": null,
+    "megatron_config": null,
+    "megatron_core": "megatron.core",
+    "modules_to_save": null,
+    "monteclora_config": null,
+    "peft_type": "LORA",
+    "peft_version": "0.21.0",
+    "qalora_group_size": 16,
+    "r": 16,
+    "rank_pattern": {},
+    "revision": null,
+    "target_modules": [
+      "gate_proj",
+      "v_proj",
+      "o_proj",
+      "k_proj",
+      "up_proj",
+      "down_proj",
+      "q_proj"
+    ],
+    "target_parameters": null,
+    "task_type": "FEATURE_EXTRACTION",
+    "trainable_token_indices": null,
+    "use_bdlora": null,
+    "use_dora": false,
+    "use_qalora": false,
+    "use_rslora": false,
+    "velora_config": null
+  }
+}

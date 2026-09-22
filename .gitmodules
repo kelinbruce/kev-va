@@ -1,0 +1,10 @@
+[submodule "vllm-ascend"]
+	path = vllm-ascend
+	url = https://github.com/kelinbruce/vllm-ascend.git
+	branch = codex/kev-qwen3
+[submodule "vllm-upstream"]
+	path = vllm-upstream
+	url = https://github.com/vllm-project/vllm.git
+[submodule "kev-reference"]
+	path = kev-reference
+	url = https://github.com/jaredpalmer/kev.git
