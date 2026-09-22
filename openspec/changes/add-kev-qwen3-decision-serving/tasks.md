@@ -25,10 +25,10 @@
 
 - [x] 4.1 复现固定 KEV renderer、option_text、特殊 token 转义，覆盖嵌套 JSON、中文、布尔/null 与伪造分隔符。
 - [x] 4.2 构造每题独立的完整 token 序列和序列内索引，验证 position IDs、选项末尾位置、决策位置与参考完全一致。
-- [ ] 4.3 实现按运行时 batch 偏移提取选项/决策表示，执行 FP32 pointer、温度校准与逐题 softmax，仅返回必要概率。
-- [ ] 4.4 用固定 FP32 hidden states 验证 head atol/rtol <=1e-5，覆盖 bias、非默认温度、K=1/2/8/255 和变长 batch。
+- [x] 4.3 实现按运行时 batch 偏移提取选项/决策表示，执行 FP32 pointer、温度校准与逐题 softmax，仅返回必要概率。
+- [x] 4.4 用固定 FP32 hidden states 验证 head atol/rtol <=1e-5，覆盖 bias、非默认温度、K=1/2/8/255 和变长 batch。
 - [ ] 4.5 验证 batch 重排和多请求混排时的索引、结果映射及 padding，禁止按所有候选项做全局 softmax。
-- [ ] 4.6 审查候选项循环中的设备同步、完整 hidden states 回传和额外归一化，保留必要的数据传输说明。
+- [x] 4.6 审查候选项循环中的设备同步、完整 hidden states 回传和额外归一化，保留必要的数据传输说明。
 
 ## 5. SystemOne API 和生命周期
 
