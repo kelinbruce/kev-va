@@ -4,7 +4,9 @@
 	branch = codex/kev-qwen3
 [submodule "vllm-upstream"]
 	path = vllm-upstream
-	url = https://github.com/vllm-project/vllm.git
+	url = https://github.com/kelinbruce/vllm.git
+	branch = codex/kev-qwen3
 [submodule "kev-reference"]
 	path = kev-reference
 	url = https://github.com/jaredpalmer/kev.git
+

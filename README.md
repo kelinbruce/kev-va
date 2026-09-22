@@ -36,6 +36,19 @@
 
 登录到华为昇腾 910 机器（CANN 9.0.1 运行时环境）后，执行以下步骤完成剩余的 11 项验收任务：
 
+### 0. 克隆仓库与初始化子模块 (前置必须)
+本项目依赖三个子模块（`vllm-ascend`、`vllm-upstream`、`kev-reference`）：
+
+- **全新克隆**（带子模块递归）：
+  ```bash
+  git clone --recurse-submodules https://github.com/kelinbruce/kev-va.git -b gemini-dev
+  cd kev-va
+  ```
+- **如果已经执行过 `git clone`**，在仓库根目录拉取并初始化子模块：
+  ```bash
+  git submodule update --init --recursive
+  ```
+
 ### 1. 收集环境与确认基线 (Task 1.1 & 1.2)
 ```bash
 python3 vllm-ascend/tools/kev/collect_environment.py \
