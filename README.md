@@ -30,6 +30,8 @@
 
 详细规格与任务进展请参考 [`openspec/changes/add-kev-qwen3-decision-serving/`](openspec/changes/add-kev-qwen3-decision-serving/)。
 
+远端部署与验收的逐步命令见[远端执行手册](docs/remote-execution.zh.md)。
+
 ## 模型制品工具
 
 工具不会下载模型，也不会修改 Ascend 运行环境。准备好固定 revision 的 checkpoint
