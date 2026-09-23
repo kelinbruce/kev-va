@@ -148,9 +148,7 @@ def _adapter_pairs(adapter_path: Path) -> dict[str, tuple[torch.Tensor, torch.Te
             b_name = a_name.replace(".lora_A.weight", ".lora_B.weight")
             if b_name not in keys:
                 raise ValueError(f"missing adapter pair: {b_name}")
-            if a_name.startswith("base_model.model."):
-                base_name = a_name.removeprefix("base_model.model.")
-            elif a_name.startswith("base_model."):
+            if a_name.startswith("base_model."):
                 base_name = a_name.removeprefix("base_model.")
             else:
                 raise ValueError(f"unsupported adapter tensor name: {a_name}")
